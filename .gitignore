@@ -1,0 +1,19 @@
+# 运行时落盘目录（D-30：数据不入库）
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 密钥与环境变量
+.env
+.env.*
+*.key
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
