@@ -10,6 +10,7 @@ venv/
 # 密钥与环境变量
 .env
 .env.*
+!.env.example
 *.key
 
 # 编辑器 / 系统
