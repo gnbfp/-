@@ -67,7 +67,9 @@ class Outcome:
     """路由结果 —— 全是数据，router 自己不做任何 I/O。
 
     ``state``：完整的新 state；``None`` = 不改。
-    ``download_file_key``：非空 = 让 app 层去下载。
+    ``download_file_key``：方案 §3 的字段。当前实现用
+      ``state.pending_file`` 传文件（方案 §7 的口径：先缓存、再配对），
+      所以它暂时没人设；保留是为了不偏离 §3 的接口。
     ``save_roster``：非空 = 登记流程确认通过，app 层把它落 ``data/members.json``。
       方案 §3 的 Outcome 只有前三个字段，这里多一个的原因：名单内容是状态机在
       ``register.py`` 里解析出来的，让 app 层"再推一遍"等于把判定逻辑复制一份

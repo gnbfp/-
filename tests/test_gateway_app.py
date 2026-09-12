@@ -1,0 +1,266 @@
+"""M0 组装层单测：依赖注入 FakeSender / FakeDownloader / FakeLLM（方案 §9）。"""
+
+import pytest
+
+from src.gateway import app as app_module
+from src.gateway import replies
+from src.gateway.events import Inbound, Mention
+from src.intelligence.extract import ExtractError
+from src.intelligence.llm import LLMError
+from src.models import RubricPoint
+from src.storage import JsonStore
+
+DOC = "作业书：1 实现词法分析器 40 分。2 撰写实验报告 60 分。"
+
+M1_PAYLOAD = {
+    "assignment": {
+        "course": "编译原理",
+        "title": "课程设计",
+        "submission": "源码 + 报告",
+        "deadline": "2026-09-19T23:59",
+        "source_file": "LLM 猜的",
+    },
+    "rubric": [
+        {
+            "id": "R1",
+            "quote": "实现词法分析器",
+            "weight": 40,
+            "observable": "可运行",
+            "status": "normal",
+        },
+        {
+            "id": "R2",
+            "quote": "撰写实验报告",
+            "weight": 60,
+            "observable": "有报告",
+            "status": "normal",
+        },
+    ],
+}
+
+M3_PAYLOAD = {
+    "cards": [
+        {
+            "task_id": "T1",
+            "module_name": "实现词法分析器",
+            "rubric_refs": ["R1"],
+            "effort_hours": 4,
+            "depends_on": [],
+            "deliverable": "一个源文件",
+            "acceptance": "从 R1 原文改写",
+        },
+        {
+            "task_id": "T2",
+            "module_name": "撰写实验报告",
+            "rubric_refs": ["R2"],
+            "effort_hours": 4,
+            "depends_on": [],
+            "deliverable": "一份报告",
+            "acceptance": "从 R2 原文改写",
+        },
+    ]
+}
+
+
+class FakeSender:
+    def __init__(self):
+        self.sent = []
+
+    def send(self, message):
+        self.sent.append(message)
+        return True
+
+    @property
+    def texts(self):
+        return [m.text for m in self.sent]
+
+
+class FakeDownloader:
+    def __init__(self, error=None):
+        self.error = error
+        self.calls = []
+
+    def download(self, pending, target_dir):
+        self.calls.append(dict(pending))
+        if self.error:
+            raise self.error
+        target_dir.mkdir(parents=True, exist_ok=True)
+        path = target_dir / (pending.get("file_name") or "作业书.txt")
+        path.write_text(DOC, encoding="utf-8")
+        return path
+
+
+class FakeLLM:
+    def __init__(self, error=None):
+        self.error = error
+
+    def chat_json(self, system, user, parse, **kwargs):
+        if self.error:
+            raise self.error
+        payload = M1_PAYLOAD if "M1 输入解析" in system else M3_PAYLOAD
+        return parse(payload)
+
+
+class _InlineThread:
+    """把后台线程换成同步执行，测试才能确定性地断言流水线结果。"""
+
+    def __init__(self, target=None, args=(), kwargs=None, daemon=None):
+        self._target, self._args, self._kwargs = target, args, kwargs or {}
+
+    def start(self):
+        self._target(*self._args, **self._kwargs)
+
+
+@pytest.fixture()
+def env(tmp_path, monkeypatch):
+    monkeypatch.setattr("src.gateway.app.threading.Thread", _InlineThread)
+    store = JsonStore(tmp_path / "data")
+    store.ensure_dirs()
+    sender = FakeSender()
+    downloader = FakeDownloader()
+    gateway = app_module.Gateway(
+        config=None, store=store, sender=sender, downloader=downloader, llm_client=FakeLLM()
+    )
+    return gateway, store, sender, downloader
+
+
+def _inbound(text="", **over):
+    data = dict(
+        chat_id="c1",
+        chat_type="group",
+        message_type="text",
+        text=text,
+        sender_type="user",
+        sender_open_id="ou_user",
+        message_id="m1",
+    )
+    data.update(over)
+    return Inbound(**data)
+
+
+def _seed_pending_file(store):
+    store.save_state(
+        {
+            "awaiting": None,
+            "pending_file": {
+                "file_key": "fk_1",
+                "file_name": "作业书.txt",
+                "resource_type": "file",
+                "message_id": "m1",
+                "chat_id": "c1",
+                "received_at": "2026-09-12T13:30:00",
+            },
+        }
+    )
+
+
+def test_file_message_is_cached_with_resource_type(env):
+    gateway, store, sender, _ = env
+    gateway.handle(_inbound("", message_type="file", file_key="fk_9", file_name="a.pdf"))
+    pending = store.load_state()["pending_file"]
+    assert pending["file_key"] == "fk_9"
+    assert pending["resource_type"] == "file"
+    assert "a.pdf" in sender.texts[0]
+
+
+def test_assignment_pipeline_writes_data_and_posts_checklist(env):
+    gateway, store, sender, downloader = env
+    _seed_pending_file(store)
+
+    gateway.handle(_inbound("作业书"))
+
+    assert sender.texts[0] == replies.PARSING
+    assert "评分点核对清单" in sender.texts[1]
+    assert "覆盖率：2/2 = 100%" in sender.texts[1]
+    assert [p.id for p in store.load_rubric()] == ["R1", "R2"]
+    assert [c.task_id for c in store.load_cards()] == ["T1", "T2"]
+    assert store.load_assignment().source_file == "作业书.txt"       # 文件名由代码给
+    assert "pending_file" not in store.load_state()                  # 消费掉缓存
+    assert downloader.calls[0]["file_key"] == "fk_1"
+
+
+def test_extract_rejection_replies_and_clears_pending(env):
+    gateway, store, sender, _ = env
+    gateway.downloader = FakeDownloader(error=ExtractError("PDF 没有文字层"))
+    _seed_pending_file(store)
+
+    gateway.handle(_inbound("作业书"))
+
+    assert "PDF 没有文字层" in sender.texts[1]
+    assert "pending_file" not in store.load_state()
+
+
+def test_llm_failure_degrades_with_a_human_message(env):
+    gateway, store, sender, _ = env
+    gateway._llm_client = FakeLLM(error=LLMError("连续 3 次未通过校验"))
+    _seed_pending_file(store)
+
+    gateway.handle(_inbound("作业书"))
+
+    assert sender.texts[1] == replies.PARSE_FAILED
+    assert "pending_file" not in store.load_state()
+
+
+def test_register_confirm_writes_members_json(env):
+    gateway, store, sender, _ = env
+    store.save_state(
+        {
+            "awaiting": "register",
+            "register": {
+                "stage": "confirm",
+                "leader": {"open_id": "ou_zhang", "name": "张三"},
+                "members": [{"open_id": "ou_li", "name": "李四"}],
+                "expires_at": None,
+            },
+        }
+    )
+    gateway.handle(_inbound("同意", sender_open_id="ou_initiator"))
+
+    roster = store.load_members()
+    assert roster.leader == "ou_zhang"
+    assert [m.open_id for m in roster.members] == ["ou_zhang", "ou_li"]
+    assert store.load_state()["awaiting"] is None
+    assert "已保存" in sender.texts[0]
+
+
+def test_bot_message_is_ignored_entirely(env):
+    gateway, store, sender, _ = env
+    gateway.handle(_inbound("拆解", sender_type="app"))
+    assert sender.texts == []
+    assert store.load_state() == {}
+
+
+def test_decompose_without_assignment_still_reports_coverage(env):
+    gateway, store, sender, _ = env
+    store.save_rubric(
+        [
+            RubricPoint(id="R1", quote="实现词法分析器", observable="可运行"),
+            RubricPoint(id="R2", quote="撰写实验报告", observable="有报告"),
+        ]
+    )
+    gateway.handle(_inbound("拆解"))
+    assert sender.texts[0] == replies.DECOMPOSING        # 先回执，重活在后台线程
+    assert "覆盖率" in sender.texts[1]                   # 报告是第二条
+    assert store.load_cards() != []
+
+
+def test_unmatched_text_gets_command_list(env):
+    gateway, _, sender, _ = env
+    gateway.handle(_inbound("随便说句话"))
+    assert sender.texts == [replies.COMMAND_LIST_TEXT]
+
+
+def test_register_collect_routes_through_mentions(env):
+    gateway, store, sender, _ = env
+    gateway.handle(_inbound("登记"))
+    assert store.load_state()["awaiting"] == "register"
+
+    mentions = (
+        Mention(key="@_user_1", open_id="ou_zhang", name="张三"),
+        Mention(key="@_user_2", open_id="ou_li", name="李四"),
+        Mention(key="@_user_3", open_id="ou_wang", name="王五"),
+    )
+    form = "登记\n组长：@_user_1\n组员：@_user_2 @_user_3"
+    gateway.handle(_inbound(form, mentions=mentions))
+    assert store.load_state()["register"]["stage"] == "confirm"
+    assert "共 3 人" in sender.texts[-1]
