@@ -354,7 +354,7 @@ DATA_DIR=data                        落盘根目录（默认仓库根 data/）
 
 ```bash
 # ① 飞书入口：长连接，不占端口、不需要公网
-python -m src.main --feishu
+python -m src.gateway.app
 
 # ② 命令行主链路（D5 门 ② 就是验它）
 python -m src.main --file 作业书.pdf

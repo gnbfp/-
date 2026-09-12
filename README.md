@@ -40,12 +40,19 @@
 ## 快速开始
 
 ```bash
-pip install lark-oapi PyMuPDF python-docx matplotlib
+# 1) 装依赖（唯一真源是 requirements.txt）
+pip install -r requirements.txt
+#    中文 Windows 上若 pip 报 UnicodeDecodeError，先执行 set PYTHONUTF8=1 再装。
 
-# 飞书入口（长连接，不需要公网）
-python -m src.main --feishu
+# 2) 配凭据（.env 已被 .gitignore 忽略，不会提交）
+copy .env.example .env
+#    要填：FEISHU_APP_ID / FEISHU_APP_SECRET / LLM_API_KEY / LLM_BASE_URL / LLM_MODEL
+#    飞书应用怎么建、要开哪些权限，见 docs/ARCHITECTURE.md §12.1
 
-# 命令行主链路：作业书 → 任务卡 → 核对清单
+# 3) 跑飞书网关（长连接，不占端口、不需要公网）
+python -m src.gateway.app
+
+# 4) 命令行主链路：作业书 → 任务卡 → 核对清单（这条不需要飞书凭据）
 python -m src.main --file 作业书.pdf
 ```
 

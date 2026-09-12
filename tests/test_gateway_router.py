@@ -126,6 +126,38 @@ def test_pending_file_without_timestamp_stays_usable():
     assert outcome.pipeline == "assignment"
 
 
+# ---------- 缓存文件的会话隔离（D-47）----------
+
+
+def _cached_in(chat_id: str, minutes_ago: int = 0) -> dict:
+    pending = _pending(minutes_ago)
+    pending["chat_id"] = chat_id
+    return {"pending_file": pending}
+
+
+def test_a_file_cached_in_another_chat_is_not_used():
+    """D-42 ④ 的演示方式就是各自私聊投递 ⇒ 没有会话隔离必然解析错人的作业书。"""
+    outcome = route(
+        _inbound("作业书", chat_id="c_me"), _cached_in("c_someone_else"), None, now=NOW
+    )
+    assert _texts(outcome) == [replies.FILE_MISSING]
+    assert outcome.pipeline == ""
+
+
+def test_a_file_cached_in_my_own_chat_is_used():
+    outcome = route(_inbound("作业书", chat_id="c_me"), _cached_in("c_me"), None, now=NOW)
+    assert _texts(outcome) == [replies.PARSING]
+    assert outcome.pipeline == "assignment"
+
+
+def test_pending_file_without_chat_id_stays_usable():
+    """旧 state 没有 chat_id：不因为缺字段就失效（与 TTL 的防御同款）。"""
+    pending = {key: value for key, value in _pending(0).items() if key != "chat_id"}
+    outcome = route(_inbound("作业书", chat_id="c_me"), {"pending_file": pending}, None, now=NOW)
+    assert _texts(outcome) == [replies.PARSING]
+    assert outcome.pipeline == "assignment"
+
+
 # ---------- 7 条前缀 ----------
 
 

@@ -145,6 +145,9 @@ def register_step(
 def _collect(
     text: str, inbound: Inbound, state: dict, block: dict, now: datetime | None
 ) -> Outcome:
+    # 从 route() 已不可达（classify() 进 "step" 的前提已包含 inbound.mentions）；
+    # 保留作 register_step() 这个公开入口的防御 —— 直接调用者仍会拿到最直白的提示。
+    # 有测试守着：tests/test_gateway_register.py::test_collect_without_any_mention_explains_at_syntax
     if not inbound.mentions:
         # 手打名字但一个 @ 都没有：D-34 只认 @ 结构里的 open_id，给最直白的提示
         return _stay(inbound, replies.REGISTER_FORM_BAD)

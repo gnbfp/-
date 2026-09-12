@@ -153,20 +153,32 @@ def remember_file(inbound: Inbound, state: dict, now: datetime | None = None) ->
 
 
 def _assignment(inbound: Inbound, state: dict, now: datetime | None = None) -> Outcome:
-    if not _pending_file(state, now):
+    if not _pending_file(state, now, inbound=inbound):
         return Outcome(replies=(reply(inbound, replies.FILE_MISSING),))
     return Outcome(replies=(reply(inbound, replies.PARSING),), pipeline="assignment")
 
 
-def _pending_file(state: dict, now: datetime | None = None) -> dict:
-    """有没有**可用**的缓存文件 —— 唯一的入口，有效期也在这里判（D-46）。
+def _pending_file(
+    state: dict, now: datetime | None = None, *, inbound: Inbound | None = None
+) -> dict:
+    """有没有**可用**的缓存文件 —— 唯一的入口，有效期（D-46）与会话（D-47）都在这里判。
 
-    过期就当没有：调用方自然回既有的 ``FILE_MISSING``，``pipeline`` 也不会起。
+    过期、或不是**这个会话**发的文件，都当没有：调用方自然回既有的 ``FILE_MISSING``，
+    ``pipeline`` 也不会起。
+
+    ``inbound`` 必须是 keyword-only：``now`` 是第 2 个位置参数，写成位置参数的话
+    ``_pending_file(state, now, inbound)`` 会把 inbound 静默塞进 now —— 不报错，
+    只是功能失效，极难查。
     """
     if not isinstance(state, dict):
         return {}
     pending = state.get("pending_file") or {}
     if not pending or _stale_pending(pending, now):
+        return {}
+    # 别的会话发的文件不算数：私聊里每人一个 chat_id，全局单份会被互相顶掉（D-42 ④
+    # 定的演示方式就是各自私聊投递，所以这是必现路径，不是边角）。
+    # 字段缺省则放行（兼容旧 state，与 _stale_pending 同款防御）。
+    if inbound is not None and pending.get("chat_id") and pending["chat_id"] != inbound.chat_id:
         return {}
     return pending
 

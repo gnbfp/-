@@ -6,8 +6,10 @@
 的事实，必须实测：
 
   1. 飞书客户端把「文字 + 挂一个附件」发出去时，是一条消息还是两条？若拆成两条，
-     那条 file 消息没有 @ 机器人，而当前应用只有 im:message.group_at_msg:readonly
+     那条 file 消息没有 @ 机器人。原假设：应用只有 im:message.group_at_msg:readonly
      （只收被 @ 到的群消息）—— 那条文件消息可能压根不会推给机器人。
+     后台实际开通的是 im:message.group_msg.include_bot:read + im:message:readonly
+     （见 requirements.md §7.1），群里不带 @ 也收得到 —— 此处旧假设已被实测推翻。
   2. 收到 file 消息后，file_key 能不能换成字节流？这取决于「获取与上传图片或文件
      资源」权限是否已开通。
 
