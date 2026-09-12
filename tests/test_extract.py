@@ -12,6 +12,7 @@ from src.intelligence.extract import (
     ExtractError,
     check_weight_sum,
     extract_text,
+    normalize_cjk,
 )
 from src.models import RubricPoint
 
@@ -177,3 +178,51 @@ def test_weight_sum_over_hundred_warns():
 
 def test_weight_sum_of_empty_rubric_is_silent():
     assert check_weight_sum([]) is None
+
+
+# ---------- CJK 部首归一化（D-43）----------
+
+
+def test_normalize_cjk_kangxi_radicals():
+    assert normalize_cjk("\u2f00") == "一"
+    assert normalize_cjk("\u2f2f") == "工"
+    assert normalize_cjk("\u2f6c") == "目"
+
+
+def test_normalize_cjk_simplified_radicals():
+    """NFKC 覆盖不到的，靠显式小表兜住。"""
+    assert normalize_cjk("\u2eda") == "页"
+    assert normalize_cjk("\u2edb") == "风"
+    assert normalize_cjk("\u2ed4") == "门"
+    assert normalize_cjk("\u2ee2") == "马"
+    assert normalize_cjk("\u2ec6") == "角"
+
+
+def test_normalize_cjk_real_sentence():
+    """真实文档里抽出来的那种句子。"""
+    assert normalize_cjk("作\u2edb") == "作风"
+    assert normalize_cjk("入\u2ed4") == "入门"
+
+
+def test_normalize_cjk_length_unchanged():
+    """逐字符映射 => 长度必须不变（引用定位、M8 对比都依赖它）。"""
+    text = "作\u2edb的\u2f00班\u2eda面"
+    assert len(normalize_cjk(text)) == len(text)
+
+
+def test_normalize_cjk_is_idempotent():
+    once = normalize_cjk("\u2f00\u2eda作\u2edb")
+    assert normalize_cjk(once) == once
+
+
+def test_normalize_cjk_keeps_fullwidth_punctuation():
+    """全角标点有语义，不能被顺手转成半角。"""
+    text = "（一）：评分项目｜满分、实得分。"
+    assert normalize_cjk(text) == text
+
+
+def test_extract_text_normalizes_radicals(tmp_path):
+    """端到端：走 extract_text() 也归一化。"""
+    src = tmp_path / "a.txt"
+    src.write_text("作\u2edb 与 \u2eda面", encoding="utf-8")
+    assert extract_text(src) == "作风 与 页面"

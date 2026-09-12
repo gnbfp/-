@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import unicodedata
 from pathlib import Path
 from typing import Sequence
 
@@ -28,6 +29,7 @@ __all__ = [
     "ROW_PREFIX",
     "extract_text",
     "check_weight_sum",
+    "normalize_cjk",
 ]
 
 TABLE_MARKER = "=== 表格区域 ==="
@@ -46,13 +48,63 @@ WEIGHT_TOLERANCE = 10.0   # 加总落在 [90, 110] 视为正常（§7.5）
 PERCENT_SCALE_MIN = 50.0
 
 
+# ---------- CJK 字符归一化（D-43）----------
+
+# CJK 部首与兼容汉字区。实测这两个区内 676 个字符有 NFKC 映射，
+# 且**全部映射成单个汉字**（所以逐字符处理长度不变）。
+_RADICAL_RANGES = ((0x2E80, 0x2FDF), (0xF900, 0xFAFF))
+
+# NFKC 覆盖不到的简体部首（CJK Radicals Supplement）。
+# 这两个区共 136 个字符无 NFKC 映射，但真实文档里只命中下面 5 个。
+# 以后遇到新的，往这张表里加一行即可。
+_RADICAL_FALLBACK = {
+    "\u2ec6": "\u89d2",   # ⻆ -> 角
+    "\u2ed4": "\u95e8",   # ⻔ -> 门
+    "\u2eda": "\u9875",   # ⻚ -> 页
+    "\u2edb": "\u98ce",   # ⻛ -> 风
+    "\u2ee2": "\u9a6c",   # ⻢ -> 马
+}
+
+
+def normalize_cjk(text: str) -> str:
+    """把 PDF 抽出的部首字符还原成正常汉字（D-43）。
+
+    字体缺 ToUnicode 映射时，PyMuPDF 会把常用汉字映射到康熙部首（一 -> U+2F00）
+    或简体部首（页 -> U+2EDA）。实测真实课程任务书：2360 字里 176 个部首字符，
+    正常「一」0 次。不还原的话，M1 的 quote 原文子串硬校验会把 LLM 写出的正常
+    汉字引用（"页面"）判成幻觉，导致 M1 重试甚至整体降级。
+
+    **逐字符处理，长度不变**；**只碰部首与兼容区，不动全角标点**。
+    """
+    if not text:
+        return text
+    return "".join(_normalize_char(ch) for ch in text)
+
+
+def _normalize_char(ch: str) -> str:
+    mapped = _RADICAL_FALLBACK.get(ch)
+    if mapped is not None:
+        return mapped
+    cp = ord(ch)
+    if any(low <= cp <= high for low, high in _RADICAL_RANGES):
+        return unicodedata.normalize("NFKC", ch)
+    return ch
+
+
 class ExtractError(RuntimeError):
     """文件抽不出文本 —— 扫描版 PDF / 图片 / 不认识的格式。消息直接可以发给用户。"""
 
 
 def extract_text(path: Path | str) -> str:
+    """按后缀分派：PDF / Word / 纯文本，最后统一做 CJK 归一化（D-43）。
+
+    归一化放在唯一出口，任何新格式进来都自动受益 —— 别在三个分支里各写一遍。
+    """
+    return normalize_cjk(_extract_raw(Path(path)))
+
+
+def _extract_raw(p: Path) -> str:
     """按后缀分派：PDF / Word / 纯文本。图片与扫描版直接拒收（§7.5）。"""
-    p = Path(path)
     suffix = p.suffix.lower()
     if suffix == ".pdf":
         return _pdf_to_text(p)
