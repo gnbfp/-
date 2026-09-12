@@ -30,6 +30,7 @@ __all__ = [
     "extract_text",
     "check_weight_sum",
     "normalize_cjk",
+    "check_radical_residue",
 ]
 
 TABLE_MARKER = "=== 表格区域 ==="
@@ -55,9 +56,10 @@ PERCENT_SCALE_MIN = 50.0
 _RADICAL_RANGES = ((0x2E80, 0x2FDF), (0xF900, 0xFAFF))
 
 # NFKC 覆盖不到的简体部首（CJK Radicals Supplement）。
-# 这两个区共 136 个字符无 NFKC 映射，但真实文档里只命中下面 5 个。
-# 以后遇到新的，往这张表里加一行即可。
+# 这两个区共 136 个字符无 NFKC 映射；扫过 7 份真实作业书（PDF + DOCX，2026-09-12），
+# 命中过的只有下面 6 个 —— 其余漏网的由 check_radical_residue() 点名，不用硬背。
 _RADICAL_FALLBACK = {
+    "\u2ec5": "\u89c1",   # ⻅ -> 见（BIM 任务书 91 个部首里最后剩的 2 个）
     "\u2ec6": "\u89d2",   # ⻆ -> 角
     "\u2ed4": "\u95e8",   # ⻔ -> 门
     "\u2eda": "\u9875",   # ⻚ -> 页
@@ -85,10 +87,36 @@ def _normalize_char(ch: str) -> str:
     mapped = _RADICAL_FALLBACK.get(ch)
     if mapped is not None:
         return mapped
-    cp = ord(ch)
-    if any(low <= cp <= high for low, high in _RADICAL_RANGES):
+    if _is_radical_char(ch):
         return unicodedata.normalize("NFKC", ch)
     return ch
+
+
+def _is_radical_char(ch: str) -> bool:
+    cp = ord(ch)
+    return any(low <= cp <= high for low, high in _RADICAL_RANGES)
+
+
+# ---------- 部首残留兜底检测（D-43）----------
+
+
+def check_radical_residue(text: str) -> str | None:
+    """归一化之后还有没有漏网的部首字符。返回警告文案；``None`` = 干净。
+
+    ``normalize_cjk()`` 只认 NFKC + 一张小表，U+2E80–U+2FDF 里那 130 个两边都兜不住
+    的字符**不会报错**，只会安静地污染 M1 的 ``quote`` 校验（D-43 讲的危害）。
+    所以在出口之后数一遍，让漏网的以软警告的形式点名露面 —— 新部首从此不会静默通过，
+    由人决定要不要往 ``_RADICAL_FALLBACK`` 里补一行。
+
+    与 ``check_weight_sum()`` 同款：**软警告不拒收**，调用方把返回值拼进回复即可。
+    """
+    residue = [ch for ch in (text or "") if _is_radical_char(ch)]
+    if not residue:
+        return None
+    kinds = sorted(set(residue))
+    shown = " ".join(kinds[:5])
+    extra = f" 等 {len(kinds)} 种" if len(kinds) > 5 else ""
+    return f"文本里有 {len(residue)} 个部首字符未归一化，请核对原文（如 {shown}{extra}）"
 
 
 class ExtractError(RuntimeError):

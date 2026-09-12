@@ -10,6 +10,7 @@ import pytest
 from src.intelligence.extract import (
     TABLE_MARKER,
     ExtractError,
+    check_radical_residue,
     check_weight_sum,
     extract_text,
     normalize_cjk,
@@ -198,6 +199,11 @@ def test_normalize_cjk_simplified_radicals():
     assert normalize_cjk("\u2ec6") == "角"
 
 
+def test_normalize_cjk_maps_jian_radical():
+    """⻅ 是 BIM 任务书 91 个部首里 NFKC 兜不住的最后一个。"""
+    assert normalize_cjk("详\u2ec5") == "详见"
+
+
 def test_normalize_cjk_real_sentence():
     """真实文档里抽出来的那种句子。"""
     assert normalize_cjk("作\u2edb") == "作风"
@@ -226,3 +232,30 @@ def test_extract_text_normalizes_radicals(tmp_path):
     src = tmp_path / "a.txt"
     src.write_text("作\u2edb 与 \u2eda面", encoding="utf-8")
     assert extract_text(src) == "作风 与 页面"
+
+
+# ---------- 部首残留兜底检测（D-43）----------
+
+
+def test_radical_residue_is_silent_when_clean():
+    assert check_radical_residue("作风与页面，全角标点（一）：评分项目。") is None
+    assert check_radical_residue("") is None
+
+
+def test_radical_residue_points_at_the_survivors():
+    """U+2E80 既不在小表里、NFKC 也不管 —— 必须点名，不能静默通过。"""
+    warning = check_radical_residue("详\u2e80 与 \u2e80")
+    assert warning is not None
+    assert "2 个" in warning
+    assert "\u2e80" in warning
+
+
+def test_radical_residue_summarizes_many_kinds():
+    warning = check_radical_residue("".join(chr(c) for c in range(0x2E80, 0x2E87)))
+    assert "7 个" in warning
+    assert "等 7 种" in warning
+
+
+def test_radical_residue_after_normalization_is_clean():
+    """出口归一化过的文本，检测不该再抱怨（两道工序对得上）。"""
+    assert check_radical_residue(normalize_cjk("作\u2edb \u2ec5 页\u2eda面")) is None
