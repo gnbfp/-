@@ -96,12 +96,13 @@ def check(cards: Sequence[TaskCard], rubric: Sequence[RubricPoint]) -> list[str]
 
 
 def decompose(
-    rubric: Sequence[RubricPoint], client: LLMClient, *, max_rounds: int = 2
+    rubric: Sequence[RubricPoint], client: LLMClient, *, max_generations: int = 3
 ) -> DecomposeResult:
-    """评分点清单 → 任务卡：生成 → ``check()`` →失败详情喂回重拆。
+    """评分点清单 → 任务卡：生成 → ``check()`` → 失败详情喂回重拆。
 
-    "最多 2 轮"按 **至多 2 次生成**（初拆 + 一次带失败反馈的重拆）实现；
-    全部 ambiguous 时不花 token，直接拒拆（§7.3 病态边界）。
+    最多 ``max_generations`` 次生成（默认 3 = 初拆 + 两次带失败反馈的重拆，
+    对齐 D-16 伪代码的 2 次 ``check()`` + 2 次重拆）；全部 ambiguous 时不花 token，
+    直接拒拆（§7.3 病态边界）。
     """
     if not any(point.status == "normal" for point in rubric):
         return DecomposeResult(
@@ -113,7 +114,7 @@ def decompose(
     cards = _generate(rubric, client, feedback=None)
     generations = 1
     failures = tuple(check(cards, rubric))
-    while failures and generations < max_rounds:
+    while failures and generations < max_generations:
         cards = _generate(rubric, client, feedback=failures, previous=cards)
         generations += 1
         failures = tuple(check(cards, rubric))

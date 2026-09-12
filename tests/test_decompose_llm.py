@@ -68,16 +68,25 @@ def test_unbalanced_cards_trigger_regeneration():
     assert "不均衡" in client.users[1]
 
 
-def test_two_failed_rounds_return_best_effort_and_failures():
+def test_third_generation_can_pass():
     client = FakeClient(
         [
             {"cards": [_card("T1", ["R1"], 4)]},
             {"cards": [_card("T1", ["R1"], 4)]},
+            {"cards": [_card("T1", ["R1", "R2"], 4)]},
         ]
     )
     result = decompose(_rubric(), client)
+    assert result.ok
+    assert result.generations == 3
+    assert len(client.users) == 3
+
+
+def test_three_failed_generations_return_best_effort_and_failures():
+    client = FakeClient([{"cards": [_card("T1", ["R1"], 4)]} for _ in range(3)])
+    result = decompose(_rubric(), client)
     assert not result.ok
-    assert result.generations == 2
+    assert result.generations == 3
     assert len(result.cards) == 1                             # 输出当前最优，交给的人（D-18）
     assert any("R2" in failure for failure in result.failures)
 
