@@ -94,12 +94,16 @@ def route(
         # 先给出口：没有逃生词，一次误触「登记」不填表就吃掉整个群的所有指令（必修 1）
         if register.is_cancel(text):
             return register.register_cancel(inbound, state, now)
-        # 谁归状态机管由 register.takes_over() 一条规则说了算（collect 只认带 @ 的表单，
-        # confirm 全收）；不吃的话继续往下走 7 条前缀，不然窗口就把指令锁死了（必修 1）
-        if register.takes_over((state or {}).get("register") or {}, inbound):
+        # 谁归状态机管由 register.classify() 一条规则说了算（必修 6）：
+        # "step" 交给状态机、"silent" 归它但不回话、"pass" 继续往下走 7 条前缀 ——
+        # 只按「带 @」接管的话，指令会被当成表单吃掉、或被静默吞掉（真机已复现）
+        mode = register.classify((state or {}).get("register") or {}, inbound, inbound.text, now)
+        if mode == "step":
             # 表单要吃**原文**：@ 占位符（@_user_1）是"这行 @ 了谁"的唯一线索，
             # 剥掉就再也对不上 open_id 了（D-34：id 只从 @ 结构里取）
             return register.register_step(inbound.text, inbound, state, now)
+        if mode == "silent":
+            return Outcome()
     if awaiting == "vote":
         return Outcome(replies=(reply(inbound, replies.PLACEHOLDER_VOTE),))
     if awaiting == "preference":

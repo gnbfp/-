@@ -26,7 +26,7 @@ __all__ = [
     "REGISTER_TTL",
     "REGISTER_CANCEL_WORDS",
     "is_cancel",
-    "takes_over",
+    "classify",
     "register_begin",
     "register_step",
     "register_cancel",
@@ -36,6 +36,10 @@ REGISTER_TTL = timedelta(minutes=5)
 _AGREE = "同意"
 # 逃生词：登记窗口的出口。没有它，一次误触「登记」就把整个群的指令都吃掉（必修 1）。
 REGISTER_CANCEL_WORDS = ("取消登记", "取消")
+
+# 表单行的形状：「组长：…」「组员：…」各自**独占一行**。
+# 必须与 _section() 的解析口径一致，否则会出现「接管了却解析不出来」。
+_FORM_LINE = re.compile(r"^[ \t]*(组长|组员)[ \t]*[:：]", re.M)
 
 
 def register_begin(inbound: Inbound, state: dict, now: datetime | None = None) -> Outcome:
@@ -60,16 +64,36 @@ def is_cancel(text: str) -> bool:
     return (text or "").strip() in REGISTER_CANCEL_WORDS
 
 
-def takes_over(block: dict, inbound: Inbound) -> bool:
-    """这条消息归登记状态机管吗？（必修 1 的边界）
+def classify(block: dict, inbound: Inbound, text: str, now: datetime | None = None) -> str:
+    """这条消息归登记状态机管吗？（必修 6）
 
-    * **confirm**：机器人自己说了「回复「同意」保存，回复别的就作废」⇒ 原文照单全收；
-    * **collect**：表单必须 @ 人（§7.7）⇒ 只认带 @ 的消息。其余落到 7 条前缀，
-      否则一次误触「登记」不填表，就把整个群的指令全吃掉。
+    三态：
+      * ``"step"``   —— 交给 ``register_step()``；
+      * ``"silent"`` —— 归状态机但不回话（§7.7「旁人发言静默忽略」）；
+      * ``"pass"``   —— 不归状态机，照走 7 条前缀。
+
+    **collect 阶段必须"带 @ 且 长得像表单"两项同时成立**，缺一不可：
+    飞书用户的习惯就是发指令前先 @ 机器人，只按「带 @」接管会把指令当表单吃掉
+    （真机复现：发起人发「@机器人 方向」被回「组长要正好 1 个人」，
+    旁人发同一句则一个字都不回）。**带 @ != 表单消息。**
+
+    ``now`` 只为一件事存在：**过期窗口一律走 ``"step"``**，好让 ``register_step()``
+    的过期分支把它清掉（上一轮复核定下的「超时窗口谁说话都能清掉」，见 ``register_step``）。
     """
-    if (block or {}).get("stage") == "confirm":
-        return True
-    return bool(inbound.mentions)
+    block = block or {}
+    if _expired(block, now):
+        return "step"
+    stage = block.get("stage")
+    initiator = block.get("initiator_open_id")
+    is_initiator = not initiator or initiator == inbound.sender_open_id
+
+    if stage == "confirm":
+        # 机器人已明说「回复别的就作废」⇒ 发起人的任何话都算数
+        return "step" if is_initiator else "silent"
+
+    if not inbound.mentions or not _FORM_LINE.search(text or ""):
+        return "pass"
+    return "step" if is_initiator else "silent"
 
 
 def register_cancel(inbound: Inbound, state: dict, now: datetime | None = None) -> Outcome:

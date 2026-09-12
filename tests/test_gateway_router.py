@@ -257,6 +257,84 @@ def test_confirm_stage_still_takes_plain_text():
     assert _texts(route(_inbound("不同意"), state, None)) == [replies.REGISTER_CANCELLED]
 
 
+# ---------- 带 @ 的指令不被登记窗口吞掉（必修 6）----------
+
+
+def _window(stage="collect", initiator="ou_user", expires_at=None):
+    return {
+        "awaiting": "register",
+        "register": {
+            "stage": stage,
+            "initiator_open_id": initiator,
+            "leader": None,
+            "members": [],
+            "expires_at": expires_at,
+        },
+    }
+
+
+_AT = (Mention(key="@_user_1", open_id="ou_bot", name="喵喵喵"),)
+_FORM = "登记\n组长：@_user_2\n组员：@_user_3 @_user_4"
+_FORM_MENTIONS = (
+    Mention(key="@_user_2", open_id="ou_a", name="甲"),
+    Mention(key="@_user_3", open_id="ou_b", name="乙"),
+    Mention(key="@_user_4", open_id="ou_c", name="丙"),
+)
+
+
+def test_initiator_command_with_mention_is_not_parsed_as_a_form():
+    """真机复现：窗口里发起人发「@机器人 方向」被回成「表单里「组长」要正好 1 个人」。"""
+    outcome = route(_inbound("@_user_1 方向", mentions=_AT), _window(), None)
+    assert _texts(outcome) == [replies.PLACEHOLDER_DIRECTION]
+    assert outcome.state is None                      # 窗口不动
+
+
+def test_stranger_command_with_mention_is_not_swallowed():
+    """真机复现：窗口里旁人发「@机器人 方向」一个字都不回（最恶劣）。"""
+    inbound = _inbound("@_user_1 方向", mentions=_AT, sender_open_id="ou_stranger")
+    outcome = route(inbound, _window(), None)
+    assert _texts(outcome) == [replies.PLACEHOLDER_DIRECTION]
+    assert outcome.state is None
+
+
+def test_initiator_command_without_mention_still_passes_through():
+    """对照：同一句不带 @ 一直是正常的。"""
+    assert _texts(route(_inbound("方向"), _window(), None)) == [replies.PLACEHOLDER_DIRECTION]
+
+
+def test_stranger_form_is_silent_and_does_not_advance():
+    """§7.7：旁人照表单填一份发出来 —— 不推进、不作废、不回话。"""
+    inbound = _inbound(_FORM, mentions=_FORM_MENTIONS, sender_open_id="ou_stranger")
+    assert route(inbound, _window(), None) == Outcome()
+
+
+def test_initiator_form_still_works():
+    """防回归：真填表必须照旧推进到 confirm。"""
+    outcome = route(_inbound(_FORM, mentions=_FORM_MENTIONS), _window(), None)
+    assert outcome.state["register"]["stage"] == "confirm"
+
+
+def test_register_command_inside_the_window_shows_the_form_again():
+    """防回归：表单第一行就是「登记」，不能被前缀抓错、也不能不认。"""
+    inbound = _inbound("@_user_1 登记", mentions=_AT)
+    assert _texts(route(inbound, _window(), None)) == [replies.REGISTER_FORM]
+
+
+def test_expired_window_is_still_cleared_by_a_stranger_with_a_mention():
+    """上一轮复核的结论不许回退：过期窗口谁说话都由 register_step 清掉。
+
+    必修 6 把 confirm 阶段旁人的消息判成 silent，若不特判过期，「发起人不再开口」
+    的过期窗口就再也没人能清了（classify 的 now 参数就是为这条存在的）。
+    """
+    window = _window(stage="confirm", expires_at="2026-09-12T13:35:00")
+    inbound = _inbound("@_user_1 方向", mentions=_AT, sender_open_id="ou_stranger")
+
+    outcome = route(inbound, window, None, now=datetime(2026, 9, 12, 14, 0, 0))
+
+    assert _texts(outcome) == [replies.REGISTER_EXPIRED]
+    assert outcome.state["awaiting"] is None
+
+
 # ---------- 边界 ----------
 
 
