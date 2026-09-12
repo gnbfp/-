@@ -10,12 +10,13 @@ import pytest
 from src.intelligence.extract import (
     TABLE_MARKER,
     ExtractError,
+    check_deadline,
     check_radical_residue,
     check_weight_sum,
     extract_text,
     normalize_cjk,
 )
-from src.models import RubricPoint
+from src.models import AssignmentMeta, RubricPoint
 
 
 def _make_pdf(path, body, table):
@@ -187,6 +188,37 @@ def test_weight_sum_over_hundred_warns():
 
 def test_weight_sum_of_empty_rubric_is_silent():
     assert check_weight_sum([]) is None
+
+
+# ---------- 截止时间软校验（D-49）----------
+
+
+def _meta(deadline=""):
+    return AssignmentMeta(
+        course="编译原理",
+        title="课程设计",
+        submission="源码 + 报告",
+        deadline=deadline,
+        source_file="作业书.txt",
+    )
+
+
+def test_empty_deadline_is_valid_and_warns():
+    meta = _meta("")
+    meta.validate()                                   # 空 deadline 不再抛 SchemaError（D-49）
+    warning = check_deadline(meta)
+    assert warning is not None
+    assert "未标注" in warning
+
+
+def test_placeholder_deadline_warns():
+    warning = check_deadline(_meta("1970-01-01T00:00"))
+    assert warning is not None
+    assert "占位值" in warning
+
+
+def test_real_deadline_is_silent():
+    assert check_deadline(_meta("2026-06-30T00:00")) is None
 
 
 # ---------- CJK 部首归一化（D-43）----------

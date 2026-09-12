@@ -73,6 +73,8 @@ class AssignmentMeta(_Base):
     """作业元信息 —— M1 产出，落 data/assignment.json（§6.0）。
 
     deadline 是作业级唯一截止线（D-23）：任务卡不设 due_date。
+    deadline **可为空字符串**（D-49）：作业书没写截止时间就不要编 —— 编出来的
+    占位值会污染 M6 催办 / M7 甘特图 / M8 基线，报告里按「未标注」显示。
     注意：deadline 的字符串格式文档没有定义，这里暂按 ISO 风格
     'YYYY-MM-DDTHH:MM' 存 —— 这属于待拍板项，别当成已定论。
     """
@@ -84,7 +86,8 @@ class AssignmentMeta(_Base):
     source_file: str
 
     def validate(self) -> None:
-        for name in ("course", "title", "submission", "deadline", "source_file"):
+        # deadline 不在必填里：允许空（D-49），空值交给 check_deadline() 出软警告
+        for name in ("course", "title", "submission", "source_file"):
             if not getattr(self, name):
                 raise SchemaError(f"AssignmentMeta.{name} 不能为空")
 
