@@ -80,7 +80,9 @@ def route(
     # 2. 状态优先：裸数字/表单怎么解释，全看 state.json 的 awaiting
     awaiting = (state or {}).get("awaiting")
     if awaiting == "register":
-        return register.register_step(text, inbound, state, now)
+        # 登记表单要吃**原文**：@ 占位符（@_user_1）正是"这行 @ 了谁"的唯一线索，
+        # 剥掉就再也对不上 open_id 了（D-34：id 只从 @ 结构里取）
+        return register.register_step(inbound.text, inbound, state, now)
     if awaiting == "vote":
         return Outcome(replies=(reply(inbound, replies.PLACEHOLDER_VOTE),))
     if awaiting == "preference":
@@ -117,6 +119,7 @@ def remember_file(inbound: Inbound, state: dict, now: datetime | None = None) ->
     pending = {
         "file_key": inbound.file_key,
         "file_name": inbound.file_name,
+        "resource_type": "image" if inbound.message_type == "image" else "file",
         "chat_id": inbound.chat_id,
         "message_id": inbound.message_id,
         "received_at": (now or datetime.now()).isoformat(timespec="seconds"),

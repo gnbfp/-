@@ -146,6 +146,20 @@ def test_awaiting_register_routes_into_register_machine():
     assert _texts(outcome) == [replies.REGISTER_CANCELLED]
 
 
+def test_register_form_sees_raw_text_with_mention_placeholders():
+    """回归：登记表单必须拿到带 @ 占位符的原文，否则解析不出人（D-34）。"""
+    state = {"awaiting": "register", "register": {"stage": "collect", "expires_at": None}}
+    mentions = (
+        Mention(key="@_user_1", open_id="ou_zhang", name="张三"),
+        Mention(key="@_user_2", open_id="ou_li", name="李四"),
+        Mention(key="@_user_3", open_id="ou_wang", name="王五"),
+    )
+    form = "登记\n组长：@_user_1\n组员：@_user_2 @_user_3"
+    outcome = route(_inbound(form, mentions=mentions), state, None)
+    assert outcome.state["register"]["stage"] == "confirm"
+    assert outcome.state["register"]["leader"]["open_id"] == "ou_zhang"
+
+
 def test_number_outside_waiting_state_is_not_a_command():
     assert _texts(route(_inbound("2"), {}, None)) == [replies.COMMAND_LIST_TEXT]
 
