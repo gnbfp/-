@@ -56,7 +56,7 @@ def _print_steps() -> None:
     print("请照这个顺序在飞书里做（每做一步，回来看终端有没有打印事件）：")
     print(r"  ①【私聊】给机器人发一句：  你好")
     print(r"  ②【私聊】直接把一个 PDF 拖进去发送（不带文字、不 @）")
-    print(r"       例：C:\Users\617\Desktop\作业书\软件254董懿课程报告.pdf")
+    print(r"       例：C:\Users\<你的用户名>\Desktop\作业书\示例作业书.pdf")
     print(r"  ③【私聊】发一句纯文字：  作业书")
     print(r"  ④【群里】@机器人 发：  @机器人 拆解")
     print(r"  ⑤【群里】不带 @，直接发一条 PDF")
