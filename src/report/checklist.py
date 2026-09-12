@@ -32,8 +32,10 @@ def render_checklist(
             owners.setdefault(ref, []).append(card.task_id)
 
     coverage = coverage_loop(cards, points)
+    # 空 deadline 不许显示成空字符串 —— 肉眼看不出来（D-49）
+    deadline = (meta.deadline or "").strip() or "未标注"
     lines = [
-        f"《{meta.title}》 {meta.course}｜交付：{meta.submission}｜截止：{meta.deadline}",
+        f"《{meta.title}》 {meta.course}｜交付：{meta.submission}｜截止：{deadline}",
         "",
         "评分点核对清单",
     ]

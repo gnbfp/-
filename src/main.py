@@ -17,7 +17,12 @@ from pathlib import Path
 
 from src.config import ConfigError, load_config
 from src.intelligence.decompose import decompose
-from src.intelligence.extract import ExtractError, check_weight_sum, extract_text
+from src.intelligence.extract import (
+    ExtractError,
+    check_deadline,
+    check_weight_sum,
+    extract_text,
+)
 from src.intelligence.llm import LLMClient, LLMError
 from src.intelligence.parse import parse_assignment
 from src.report.checklist import render_checklist
@@ -61,17 +66,21 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[LLM 失败，降级不猜] {exc}", file=sys.stderr)
         return 2
 
-    store = JsonStore(config.data_dir)
-    store.ensure_dirs()
-    store.save_assignment(parsed.meta)
-    store.save_rubric(list(parsed.points))
-    store.save_cards(list(result.cards))
-    _progress(f"[落盘] {store.root}")
+    if parsed.points:
+        store = JsonStore(config.data_dir)
+        store.ensure_dirs()
+        store.save_assignment(parsed.meta)
+        store.save_rubric(list(parsed.points))
+        store.save_cards(list(result.cards))
+        _progress(f"[落盘] {store.root}")
+    else:
+        # 没找到评分标准 → 拒拆不写盘，保留上一份产物（D-49 ④，与 gateway 同口径）
+        _progress("[落盘] 没找到评分标准 → 拒拆不写盘，保留上一份产物")
 
     print(render_checklist(parsed.meta, parsed.points, result.cards, result))
-    warning = check_weight_sum(parsed.points)
-    if warning:
-        print(f"\n[软警告] {warning}")
+    for warning in (check_weight_sum(parsed.points), check_deadline(parsed.meta)):
+        if warning:
+            print(f"\n[软警告] {warning}")
     return 0 if result.ok else 1
 
 

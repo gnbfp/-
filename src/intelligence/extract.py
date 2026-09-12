@@ -8,18 +8,19 @@
 
 职责边界：
   * 本模块**不调 LLM**、不落盘、不判定评分点。
-  * ``check_weight_sum()`` 的入参是 **M1 解析之后**的 ``RubricPoint`` 列表
-    （``weight`` 是 LLM 抽出来的）。它按 §6.3 的管线顺序放在这里，属于软校验：
-    命中只返回一句警告，**绝不拒收**。
+  * ``check_weight_sum()`` / ``check_deadline()`` 的入参是 **M1 解析之后**的产物
+    （``RubricPoint`` / ``AssignmentMeta``）。它们按 §6.3 的管线顺序放在这里，
+    属于软校验：命中只返回一句警告，**绝不拒收**。
 """
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from pathlib import Path
 from typing import Sequence
 
-from src.models import RubricPoint
+from src.models import AssignmentMeta, RubricPoint
 
 __all__ = [
     "ExtractError",
@@ -29,6 +30,7 @@ __all__ = [
     "ROW_PREFIX",
     "extract_text",
     "check_weight_sum",
+    "check_deadline",
     "normalize_cjk",
     "check_radical_residue",
 ]
@@ -43,6 +45,7 @@ _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tif", ".t
 
 WEIGHT_TARGET = 100.0     # 百分制满分
 WEIGHT_TOLERANCE = 10.0   # 加总落在 [90, 110] 视为正常（§7.5）
+DEADLINE_MIN_YEAR = 2000  # 早于此年份不可能真是截止时间，必是占位值（D-49）
 # "能归一化到百分制"的落地口径：总分太小的量纲（如 20 分制）直接跳过，不误报。
 # 之所以需要这道门：丢了几行的百分制评分表（如加总 85）与 20 分制在数值上无法
 # 仅凭加总区分；低于本门限一律视为另一种量纲。此取值为工程默认，待真实作业书校准。
@@ -243,9 +246,12 @@ def _assemble(body: str, table_lines: Sequence[str]) -> str:
 def check_weight_sum(points: Sequence[RubricPoint]) -> str | None:
     """权重加总软校验。返回警告文案；``None`` = 跳过或正常。
 
-    前置条件（缺一即整体跳过，不误报）：
-      * 每一个评分点都有 ``weight``；
-      * 加总为正，且量纲是百分制（``>= PERCENT_SCALE_MIN``，20 分制之类跳过）。
+    分支（§7.5 / D-39 / D-48）：
+      * 全部没有 ``weight`` → 整体跳过（§6.1 允许无分值的评分点，报警会成噪音）；
+      * **部分有、部分没有** → 软警告"疑似把正文要求当成了评分点"：真评分点通常整节
+        都标分值，一半带分一半不带，往往是 M1 把正文要求也收进来了；
+      * 全都有 → 量纲是百分制（``>= PERCENT_SCALE_MIN``）时校验加总是否接近 100；
+        20 分制之类整体跳过，不误报。
 
     **软警告不拒收**：调用方（M1）把返回值拼进给用户的回复即可。
     """
@@ -253,7 +259,13 @@ def check_weight_sum(points: Sequence[RubricPoint]) -> str | None:
         return None
     weights = [p.weight for p in points]
     if any(weight is None for weight in weights):
-        return None
+        if any(weight is not None for weight in weights):
+            unweighted = sum(1 for weight in weights if weight is None)
+            return (
+                f"评分点里有 {unweighted}/{len(points)} 条没有分值，"
+                f"疑似把正文要求当成了评分点，请对照原文核对"
+            )
+        return None      # 全都没有分值 → 保持现状（§6.1 明确允许无分值的评分点）
     total = float(sum(weights))              # type: ignore[arg-type]
     if total <= 0 or total < PERCENT_SCALE_MIN:
         return None
@@ -264,3 +276,25 @@ def check_weight_sum(points: Sequence[RubricPoint]) -> str | None:
         f"评分标准解析疑似丢行，请对照原文核对"
         f"（评分点权重加总 = {total:g}，应接近 {WEIGHT_TARGET:g}）"
     )
+
+
+# ---------- 截止时间软校验（D-49）----------
+
+
+def check_deadline(meta: AssignmentMeta | None) -> str | None:
+    """截止时间软校验。返回警告文案；``None`` = 正常（D-49）。
+
+    schema 放开 ``deadline`` 之后，提示词"没有就留空"才真的成立：空值不是错误，
+    但要**明确报出来**，否则报告上是一个肉眼看不出的空字符串。同时挡住 LLM 为了
+    跳出校验而死填的占位值（实测出现过 ``1970-01-01T00:00``）。
+
+    门限取"年份 < 2000"而不是"早于今天"—— 真实但已过期的截止时间不该被误报。
+    与 ``check_weight_sum()`` 同款：**软警告、不拒收**。
+    """
+    raw = (getattr(meta, "deadline", "") or "").strip()
+    if not raw:
+        return "作业书里没读到明确的截止时间，报告按「未标注」显示"
+    match = re.match(r"^(\d{4})-", raw)
+    if not match or int(match.group(1)) < DEADLINE_MIN_YEAR:
+        return f"截止时间 {raw!r} 很可能是占位值（原文没有明确日期），请对照原文核对"
+    return None

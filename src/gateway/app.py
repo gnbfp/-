@@ -25,6 +25,7 @@ from src.intelligence.coverage import coverage_loop
 from src.intelligence.decompose import decompose
 from src.intelligence.extract import (
     ExtractError,
+    check_deadline,
     check_radical_residue,
     check_weight_sum,
     extract_text,
@@ -109,6 +110,13 @@ class Gateway:
 
         text = extract_text(path)
         parsed = parse_assignment(text, self._llm(), source_file=path.name)
+
+        # 空 rubric：M1 全文没找到评分标准（D-48）→ 不跑 M3、不拿正文要求凑数，
+        # 也**一个字都不落盘** —— 否则拒拆会把上一份好产物清空（D-49 ②）。
+        if not parsed.points:
+            self.sender.send(reply(inbound, replies.NO_RUBRIC_FOUND))
+            return
+
         self.store.save_assignment(parsed.meta)
         self.store.save_rubric(list(parsed.points))
 
@@ -116,9 +124,15 @@ class Gateway:
         self.store.save_cards(list(result.cards))
 
         report = render_checklist(parsed.meta, parsed.points, result.cards, result)
-        # 两道软校验都只警告、不拒收（§7.5）：权重加总 + D-43 的部首残留。
+        # 三道软校验都只警告、不拒收（§7.5）：权重加总 + D-43 的部首残留 + D-49 的截止时间。
         warnings = [
-            w for w in (check_weight_sum(parsed.points), check_radical_residue(text)) if w
+            w
+            for w in (
+                check_weight_sum(parsed.points),
+                check_radical_residue(text),
+                check_deadline(parsed.meta),
+            )
+            if w
         ]
         if warnings:
             report += "\n\n" + "\n".join(f"[软警告] {w}" for w in warnings)

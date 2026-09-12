@@ -17,6 +17,7 @@ __all__ = [
     "EXTRACT_REJECTED",
     "DECOMPOSING",
     "NEEDS_RUBRIC",
+    "NO_RUBRIC_FOUND",
     "PLACEHOLDER_DIRECTION",
     "PLACEHOLDER_VOTE",
     "PLACEHOLDER_PREFERENCE",
@@ -52,6 +53,10 @@ PARSE_FAILED = "解析失败，请检查文件是否是文字版；或回复「�
 EXTRACT_REJECTED = "这个文件没法用：{reason}"
 DECOMPOSING = "收到，正在用现有评分点重新拆解…"
 NEEDS_RUBRIC = "还没有评分点：先把作业书文件发给我，再回复「作业书」。"
+NO_RUBRIC_FOUND = (
+    "这份文件里我没找到评分标准（评分表 / 成绩评定 那一小节）。"
+    "为了不瞎拆，我先停在这里 —— 请确认作业书里有没有评分标准，或换一份带评分标准的文件。"
+)
 
 # ---- 未接上的模块：只留入口，业务逻辑归各自 owner（方案 §12）----
 PLACEHOLDER_DIRECTION = "「方向」还没接上候选方向生成（M2 在 9/16 接）。现在可以先用「作业书」把任务卡拆出来。"

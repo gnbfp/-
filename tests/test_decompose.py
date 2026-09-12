@@ -74,6 +74,20 @@ def test_all_ambiguous_reason_wins_over_empty_cards():
     assert "拒拆" in failures[0]
 
 
+def test_empty_rubric_is_refused_with_its_own_reason():
+    # D-48：没有评分标准 ≠ 全是模糊点，文案要分开
+    failures = check([], [])
+    assert len(failures) == 1
+    assert "没有解析到评分点" in failures[0]
+    assert "ambiguous" not in failures[0]
+
+
+def test_all_ambiguous_reason_is_unchanged():
+    failures = check([], [_point("R1", status="ambiguous")])
+    assert len(failures) == 1
+    assert "没有任何可拆评分点（全部为 ambiguous）" in failures[0]
+
+
 def test_ambiguous_points_may_be_referenced_without_error():
     rubric = [_point("R1"), _point("R2", status="ambiguous")]
     assert check([_card(refs=("R1", "R2"))], rubric) == []

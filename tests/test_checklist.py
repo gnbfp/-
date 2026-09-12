@@ -78,3 +78,17 @@ def test_checklist_shows_ambiguous_point_referenced_by_card():
     assert "[?] R3（30）需组长确认（模糊要求；已被 T5 引用）" in text
     assert "覆盖率：2/2 = 100%" in text          # 模糊点不进分子分母
     assert "任务卡 3 张" in text                  # 它的卡照常计入总数与均衡
+
+
+def test_checklist_shows_unlabeled_when_deadline_empty():
+    # D-49：空 deadline 要显式显示成「未标注」，不能是个看不出来的空字符串
+    meta = AssignmentMeta(
+        course="编译原理",
+        title="课程设计",
+        submission="源码 + 报告",
+        deadline="",
+        source_file="作业书.txt",
+    )
+    result = DecomposeResult(cards=(), failures=(), generations=0)
+    text = render_checklist(meta, _points(), [], result)
+    assert "截止：未标注" in text
