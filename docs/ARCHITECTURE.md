@@ -338,7 +338,7 @@ schedule 每天固定时间扫描 data/assignments.json
 | 项 | 说明 |
 |---|---|
 | Python | 3.10+ |
-| **飞书** | 企业自建应用 + 机器人能力 + WebSocket 长连接（**已实测通过**）。**要申请的权限（四条，其中收权限有两条，别只申请一条）**：① 收**群内 @机器人**的消息；② 收**用户发给机器人的私聊**消息（M4/M5/M6 全是私聊指令，漏了它私聊全哑）；③ 发消息（含私聊与 @）；④ **下载消息里的文件**（可能需管理员审批，越早越好）。诊断：`python -m tools.probe_feishu` |
+| **飞书** | 企业自建应用 + 机器人能力 + WebSocket 长连接（**已实测通过**）。**实测可用且已开通的权限组合（2026-09-12）**：`im:message:readonly`（读单聊 + 群组消息）、`im:message.group_msg.include_bot:read`（含机器人消息的群消息）、`im:message.p2p_msg:readonly`（私聊）、`im:message:send_as_bot`（发消息）、`im:message:update`、`im:resource`（下载文件资源）。另开了 `im:message:send_multi_depts` / `im:message:send_multi_users`，本项目未用到（催办与私聊都按单个 `open_id` 发），可留可撤。**坑**：`im:message.group_msg.include_bot:read` 会让**机器人自己的消息也回来** ⇒ 路由必须先滤 `sender_type == "app"`。诊断：`python -m tools.probe_feishu` |
 | **LLM** | DeepSeek 或 GLM 的 API key（只服务三处：M1 / M2 / M3） |
 | 依赖库 | `lark-oapi`（飞书 SDK）、`PyMuPDF>=1.23.0`（PDF + `find_tables()`）、`python-docx`、`matplotlib`（甘特图）、一个 LLM SDK |
 
