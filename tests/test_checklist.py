@@ -68,3 +68,13 @@ def test_checklist_all_ambiguous_prints_no_percentage():
     # 固定文案里本来就有"不是 100%"；除此之外不许再格式化出任何百分比
     assert text.count("%") == 1
     assert "0/0" not in text
+
+
+def test_checklist_shows_ambiguous_point_referenced_by_card():
+    points = _points()
+    cards = [_card("T1", ["R1"]), _card("T2", ["R2"]), _card("T5", ["R3"])]
+    result = DecomposeResult(cards=tuple(cards), failures=(), generations=1)
+    text = render_checklist(META, points, cards, result)
+    assert "[?] R3（30）需组长确认（模糊要求；已被 T5 引用）" in text
+    assert "覆盖率：2/2 = 100%" in text          # 模糊点不进分子分母
+    assert "任务卡 3 张" in text                  # 它的卡照常计入总数与均衡
