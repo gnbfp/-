@@ -9,7 +9,7 @@ from src.gateway import replies
 from src.gateway.events import Inbound, Mention
 from src.intelligence.extract import ExtractError
 from src.intelligence.llm import LLMError
-from src.models import RubricPoint
+from src.models import RubricPoint, TaskCard
 from src.storage import JsonStore
 
 DOC = "作业书：1 实现词法分析器 40 分。2 撰写实验报告 60 分。"
@@ -231,6 +231,48 @@ def test_llm_failure_degrades_with_a_human_message(env):
 
     assert sender.texts[1] == replies.PARSE_FAILED
     assert "pending_file" not in store.load_state()
+
+
+class _EmptyRubricLLM(FakeLLM):
+    """M1 返回空 rubric（文件里没有评分标准），并记录 M3 有没有被调过。"""
+
+    def __init__(self):
+        super().__init__()
+        self.m3_called = False
+
+    def chat_json(self, system, user, parse, **kwargs):
+        if "M1 输入解析" in system:
+            return parse({**M1_PAYLOAD, "rubric": []})
+        self.m3_called = True
+        return parse(M3_PAYLOAD)
+
+
+def test_empty_rubric_stops_before_m3_and_keeps_cards(env):
+    """D-48：M1 没找到评分标准 → 不跑 M3、不拿正文凑数，旧任务卡不能被写坏。"""
+    gateway, store, sender, _ = env
+    store.save_cards(
+        [
+            TaskCard(
+                task_id="T_seed",
+                module_name="旧卡",
+                rubric_refs=["R1"],
+                effort_hours=4.0,
+                deliverable="旧产物",
+                acceptance="旧验收",
+            )
+        ]
+    )
+    llm = _EmptyRubricLLM()
+    gateway._llm_client = llm
+    _seed_pending_file(store)
+
+    gateway.handle(_inbound("作业书"))
+
+    assert sender.texts[0] == replies.PARSING
+    assert sender.texts[-1] == replies.NO_RUBRIC_FOUND
+    assert llm.m3_called is False                                  # 没起 M3、不烧第二次 LLM
+    assert store.load_rubric() == []                               # 空 rubric 如实落盘
+    assert [c.task_id for c in store.load_cards()] == ["T_seed"]   # 旧卡没被覆盖
 
 
 def test_register_confirm_writes_members_json(env):

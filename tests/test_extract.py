@@ -156,9 +156,17 @@ def test_weight_sum_in_range_is_silent():
     assert check_weight_sum([_point("R1", 95)]) is None
 
 
-def test_weight_sum_missing_is_skipped_not_warned():
-    assert check_weight_sum([_point("R1", 60), _point("R2")]) is None
+def test_weight_sum_all_missing_is_skipped():
     assert check_weight_sum([_point("R1")]) is None
+    assert check_weight_sum([_point("R1"), _point("R2")]) is None
+
+
+def test_weight_sum_partial_missing_warns():
+    # D-48：一半带分一半不带，往往是 M1 把正文要求也当评分点收进来了
+    warning = check_weight_sum([_point("R1", 60), _point("R2")])
+    assert warning is not None
+    assert "1/2 条没有分值" in warning
+    assert "疑似把正文要求当成了评分点" in warning
 
 
 def test_weight_sum_twenty_scale_is_skipped():

@@ -100,6 +100,16 @@ def test_all_ambiguous_is_refused_without_llm_call():
     assert client.users == []
 
 
+def test_empty_rubric_is_refused_without_llm_call():
+    # D-48：M1 没找到评分标准时，M3 连一次 LLM 都不该调
+    client = FakeClient([])
+    result = decompose([], client)
+    assert not result.ok
+    assert result.generations == 0
+    assert result.failures[0].startswith("没有解析到评分点")
+    assert client.users == []
+
+
 def test_unknown_rubric_ref_is_a_schema_error():
     client = FakeClient([{"cards": [_card("T1", ["R9"], 4)]}])
     with pytest.raises(LLMOutputError) as exc:

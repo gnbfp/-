@@ -112,6 +112,12 @@ class Gateway:
         self.store.save_assignment(parsed.meta)
         self.store.save_rubric(list(parsed.points))
 
+        # 空 rubric：M1 全文没找到评分标准（D-48）→ 不跑 M3、不拿正文要求凑数，
+        # 直接说明并停下（继续跑只会拿"撰写报告/格式规范"这类正文要求当评分点）。
+        if not parsed.points:
+            self.sender.send(reply(inbound, replies.NO_RUBRIC_FOUND))
+            return
+
         result = decompose(parsed.points, self._llm())
         self.store.save_cards(list(result.cards))
 

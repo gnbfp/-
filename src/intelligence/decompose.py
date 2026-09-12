@@ -67,18 +67,34 @@ class DecomposeResult:
         return not self.failures
 
 
+def _refusal(rubric: Sequence[RubricPoint]) -> str | None:
+    """两种"不该拆"的清单，返回拒拆原因；可拆则 ``None``。
+
+    * ``rubric`` 为空 → M1 没找到评分标准（D-48），**不许拿正文要求凑数**；
+    * 非空但全部 ``ambiguous`` → 没有可核对的点（§7.3 病态边界，与 T13 同类）。
+
+    与 ``decompose()`` 共用同一份文案：拒拆理由只此一处，不会两边漂移。
+    """
+    if not rubric:
+        return "没有解析到评分点（作业书里没找到评分标准）→ 拒拆，转人工"
+    if not any(point.status == "normal" for point in rubric):
+        return "没有任何可拆评分点（全部为 ambiguous）→ 拒拆，转人工确认"
+    return None
+
+
 def check(cards: Sequence[TaskCard], rubric: Sequence[RubricPoint]) -> list[str]:
     """M3 自检循环的判定函数（D-16）。空列表 = 达标；非空 = 失败原因，喂回 LLM 重拆。
 
     规则（§7.3）：
+      * ``rubric`` 为空 / 全部 ``ambiguous`` → **拒拆**（``_refusal()``）
       * ``cards`` 为空 → **短路判不达标**，不调 ``max()``（待定义-31，D-25）
       * 可拆点必须 100% 覆盖（分母 = ``status="normal"``）
       * ``max/min <= BALANCE_LIMIT``；工时取 0.5 地板防除零（``coverage.py``）
-      * 全部评分点都是 ``ambiguous`` → 拒拆，转人工确认（§7.3 病态边界，与 T13 同类）
     """
+    reason = _refusal(rubric)
+    if reason:
+        return [reason]
     coverage = coverage_loop(cards, rubric)
-    if not coverage.eligible:
-        return ["没有任何可拆评分点（全部为 ambiguous）→ 拒拆，转人工确认"]
     if not cards:
         return ["没有任何任务卡（cards 为空）"]
 
@@ -101,15 +117,12 @@ def decompose(
     """评分点清单 → 任务卡：生成 → ``check()`` → 失败详情喂回重拆。
 
     最多 ``max_generations`` 次生成（默认 3 = 初拆 + 两次带失败反馈的重拆，
-    对齐 D-16 伪代码的 2 次 ``check()`` + 2 次重拆）；全部 ambiguous 时不花 token，
-    直接拒拆（§7.3 病态边界）。
+    对齐 D-16 伪代码的 2 次 ``check()`` + 2 次重拆）；空 rubric 或全部 ambiguous
+    时**不花 token**，直接拒拆（D-48 / §7.3 病态边界）。
     """
-    if not any(point.status == "normal" for point in rubric):
-        return DecomposeResult(
-            cards=(),
-            failures=("没有任何可拆评分点（全部为 ambiguous）→ 拒拆，转人工确认",),
-            generations=0,
-        )
+    reason = _refusal(rubric)
+    if reason:
+        return DecomposeResult(cards=(), failures=(reason,), generations=0)
 
     cards = _generate(rubric, client, feedback=None)
     generations = 1

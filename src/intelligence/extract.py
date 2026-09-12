@@ -243,9 +243,12 @@ def _assemble(body: str, table_lines: Sequence[str]) -> str:
 def check_weight_sum(points: Sequence[RubricPoint]) -> str | None:
     """权重加总软校验。返回警告文案；``None`` = 跳过或正常。
 
-    前置条件（缺一即整体跳过，不误报）：
-      * 每一个评分点都有 ``weight``；
-      * 加总为正，且量纲是百分制（``>= PERCENT_SCALE_MIN``，20 分制之类跳过）。
+    分支（§7.5 / D-39 / D-48）：
+      * 全部没有 ``weight`` → 整体跳过（§6.1 允许无分值的评分点，报警会成噪音）；
+      * **部分有、部分没有** → 软警告"疑似把正文要求当成了评分点"：真评分点通常整节
+        都标分值，一半带分一半不带，往往是 M1 把正文要求也收进来了；
+      * 全都有 → 量纲是百分制（``>= PERCENT_SCALE_MIN``）时校验加总是否接近 100；
+        20 分制之类整体跳过，不误报。
 
     **软警告不拒收**：调用方（M1）把返回值拼进给用户的回复即可。
     """
@@ -253,7 +256,13 @@ def check_weight_sum(points: Sequence[RubricPoint]) -> str | None:
         return None
     weights = [p.weight for p in points]
     if any(weight is None for weight in weights):
-        return None
+        if any(weight is not None for weight in weights):
+            unweighted = sum(1 for weight in weights if weight is None)
+            return (
+                f"评分点里有 {unweighted}/{len(points)} 条没有分值，"
+                f"疑似把正文要求当成了评分点，请对照原文核对"
+            )
+        return None      # 全都没有分值 → 保持现状（§6.1 明确允许无分值的评分点）
     total = float(sum(weights))              # type: ignore[arg-type]
     if total <= 0 or total < PERCENT_SCALE_MIN:
         return None

@@ -3,7 +3,7 @@
 import pytest
 
 from src.intelligence.llm import LLMOutputError
-from src.intelligence.parse import parse_assignment
+from src.intelligence.parse import _validate_points, parse_assignment
 
 TEXT = """编译原理课程设计作业书
 
@@ -91,9 +91,22 @@ def test_missing_assignment_is_rejected():
     assert "assignment" in str(exc.value)
 
 
-def test_empty_rubric_is_rejected():
+def test_empty_rubric_is_allowed():
+    # D-48：作业书里没找到评分标准时，空 rubric 合法（不许拿正文要求凑数）
+    result = parse_assignment(TEXT, FakeClient([_payload(rubric=[])]))
+    assert result.points == ()
+
+
+def test_validate_points_accepts_empty_list():
+    problems: list[str] = []
+    assert _validate_points([], TEXT, problems) == []
+    assert problems == []
+
+
+def test_validate_points_rejects_non_list():
+    # 非数组不是"空 rubric"，仍要在公开入口报错（不是"静默放行一切"）
     with pytest.raises(LLMOutputError):
-        parse_assignment(TEXT, FakeClient([_payload(rubric=[])]))
+        parse_assignment(TEXT, FakeClient([_payload(rubric="不是数组")]))
 
 
 def test_duplicate_ids_are_rejected():
