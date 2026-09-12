@@ -53,7 +53,7 @@ def main(argv: list[str] | None = None) -> int:
     client = LLMClient.from_config(config)
     try:
         _progress("[M1] 解析评分点…")
-        parsed = parse_assignment(text, client)
+        parsed = parse_assignment(text, client, source_file=Path(args.file).name)
         _progress(f"[M1] 评分点 {len(parsed.points)} 条、作业元信息已抽出")
         _progress("[M3] 拆解 + 自检循环…")
         result = decompose(parsed.points, client)

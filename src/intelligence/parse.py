@@ -52,11 +52,17 @@ class ParsedAssignment:
     points: tuple[RubricPoint, ...]
 
 
-def parse_assignment(text: str, client: LLMClient) -> ParsedAssignment:
-    """单次 LLM 调用（含契约内的自动重试），返回已校验的解析结果。"""
+def parse_assignment(
+    text: str, client: LLMClient, *, source_file: str = ""
+) -> ParsedAssignment:
+    """单次 LLM 调用（含契约内的自动重试），返回已校验的解析结果。
+
+    ``source_file`` 由调用方（CLI / gateway）传真实文件名：它描述的是**这份文件**，
+    属于程序已知的事实，不该让 LLM 从正文里猜。
+    """
 
     def parse(payload) -> ParsedAssignment:
-        return _validate(text, payload)
+        return _validate(text, payload, source_file)
 
     user = "作业书文本如下：\n\n" + text
     return client.chat_json(M1_SYSTEM, user, parse)
@@ -67,12 +73,12 @@ def _normalize(value: str) -> str:
     return re.sub(r"\s+", "", value or "")
 
 
-def _validate(text: str, payload) -> ParsedAssignment:
+def _validate(text: str, payload, source_file: str = "") -> ParsedAssignment:
     problems: list[str] = []
     if not isinstance(payload, dict):
         raise LLMOutputError(f"顶层必须是 JSON 对象，得到 {type(payload).__name__}")
 
-    meta = _validate_meta(payload.get("assignment"), problems)
+    meta = _validate_meta(payload.get("assignment"), problems, source_file)
     points = _validate_points(payload.get("rubric"), text, problems)
 
     if problems:
@@ -80,12 +86,17 @@ def _validate(text: str, payload) -> ParsedAssignment:
     return ParsedAssignment(meta=meta, points=tuple(points))
 
 
-def _validate_meta(raw, problems: list[str]) -> AssignmentMeta | None:
+def _validate_meta(
+    raw, problems: list[str], source_file: str = ""
+) -> AssignmentMeta | None:
     if not isinstance(raw, dict):
         problems.append("缺 assignment 对象")
         return None
+    data = dict(raw)
+    if source_file:
+        data["source_file"] = source_file
     try:
-        meta = AssignmentMeta.from_dict(raw)
+        meta = AssignmentMeta.from_dict(data)
         meta.validate()
         return meta
     except (SchemaError, TypeError, ValueError) as exc:

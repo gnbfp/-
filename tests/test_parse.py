@@ -108,3 +108,10 @@ def test_missing_weight_is_allowed():
     payload = _payload()
     payload["rubric"][0].pop("weight")
     assert parse_assignment(TEXT, FakeClient([payload])).points[0].weight is None
+
+
+def test_source_file_comes_from_caller_not_the_llm():
+    payload = _payload()
+    payload["assignment"]["source_file"] = "LLM 猜的标题"
+    result = parse_assignment(TEXT, FakeClient([payload]), source_file="作业书.pdf")
+    assert result.meta.source_file == "作业书.pdf"
