@@ -179,6 +179,30 @@ def test_assignment_pipeline_writes_data_and_posts_checklist(env):
     assert downloader.calls[0]["file_key"] == "fk_1"
 
 
+class _RadicalDownloader(FakeDownloader):
+    """作业书里混进一个 NFKC 和小表都兜不住的部首（U+2E80）。"""
+
+    def download(self, pending, target_dir):
+        target_dir.mkdir(parents=True, exist_ok=True)
+        path = target_dir / "作业书.txt"
+        path.write_text(DOC + "\n附注：详\u2e80 第 3 节。", encoding="utf-8")
+        return path
+
+
+def test_residual_radicals_surface_as_a_soft_warning(env):
+    """D-43 兜底：漏网部首要在清单里点名，而不是悄悄污染 M1 的 quote 校验。"""
+    gateway, store, sender, _ = env
+    gateway.downloader = _RadicalDownloader()
+    _seed_pending_file(store)
+
+    gateway.handle(_inbound("作业书"))
+
+    report = sender.texts[-1]
+    assert "评分点核对清单" in report          # 软警告不拒收：清单照常出
+    assert "[软警告]" in report
+    assert "部首字符未归一化" in report
+
+
 def test_extract_rejection_replies_and_clears_pending(env):
     gateway, store, sender, _ = env
     gateway.downloader = FakeDownloader(error=ExtractError("PDF 没有文字层"))

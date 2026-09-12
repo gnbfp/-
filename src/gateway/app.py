@@ -23,7 +23,12 @@ from src.gateway.events import Inbound, Outcome, reply, to_inbound
 from src.gateway.router import pipeline_kind, route
 from src.intelligence.coverage import coverage_loop
 from src.intelligence.decompose import decompose
-from src.intelligence.extract import ExtractError, check_weight_sum, extract_text
+from src.intelligence.extract import (
+    ExtractError,
+    check_radical_residue,
+    check_weight_sum,
+    extract_text,
+)
 from src.intelligence.llm import LLMClient, LLMError
 from src.intelligence.parse import parse_assignment
 from src.models import Roster
@@ -109,9 +114,12 @@ class Gateway:
         self.store.save_cards(list(result.cards))
 
         report = render_checklist(parsed.meta, parsed.points, result.cards, result)
-        warning = check_weight_sum(parsed.points)
-        if warning:
-            report += f"\n\n[软警告] {warning}"
+        # 两道软校验都只警告、不拒收（§7.5）：权重加总 + D-43 的部首残留。
+        warnings = [
+            w for w in (check_weight_sum(parsed.points), check_radical_residue(text)) if w
+        ]
+        if warnings:
+            report += "\n\n" + "\n".join(f"[软警告] {w}" for w in warnings)
         self.sender.send(reply(inbound, report))
 
     def _run_decompose(self, inbound: Inbound) -> None:
