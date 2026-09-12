@@ -1,5 +1,7 @@
 """M0 路由单测（§7.1 / D-33 / D-42，方案 §4 / §9）。不碰飞书、不碰网络。"""
 
+from datetime import datetime, timedelta
+
 from src.gateway import replies
 from src.gateway.events import Inbound, Mention, Outcome
 from src.gateway.router import (
@@ -64,9 +66,12 @@ def test_file_message_is_cached_not_processed():
     assert outcome.download_file_key == ""          # 下载归 app 层
 
 
-def test_image_message_is_dropped_not_cached():
-    """必修 3：图片静默丢弃，不回话也不进缓存。"""
-    assert route(_inbound("", message_type="image", file_key="ik_1"), {}, None) == Outcome()
+def test_image_gets_a_rejection_reply():
+    """用户 2026-09-12 拍板：图片回一句短拒收，但仍然**不入缓存**。"""
+    outcome = route(_inbound("", message_type="image", file_key="ik_1"), {}, None)
+    assert _texts(outcome) == [replies.IMAGE_REJECTED]
+    assert outcome.state is None                    # 不写 state ⇒ 缓存没被动过
+    assert outcome.pipeline == ""
 
 
 def test_image_does_not_evict_a_cached_file():
@@ -74,12 +79,51 @@ def test_image_does_not_evict_a_cached_file():
     state = route(
         _inbound("", message_type="file", file_key="fk_1", file_name="作业书.pdf"), {}, None
     ).state
-    assert route(_inbound("", message_type="image", file_key="ik_1"), state, None) == Outcome()
+    outcome = route(_inbound("", message_type="image", file_key="ik_1"), state, None)
+    assert outcome.state is None                    # 图片不写 state ⇒ 缓存没被动过
     assert state["pending_file"]["file_key"] == "fk_1"
 
 
 def test_other_message_types_are_ignored():
     assert route(_inbound("", message_type="sticker"), {}, None) == Outcome()
+
+
+# ---------- 缓存文件的有效期（D-46）----------
+
+NOW = datetime(2026, 9, 12, 13, 30, 0)
+
+
+def _pending(minutes_ago: int) -> dict:
+    """一个"minutes_ago 分钟前收到"的缓存文件。"""
+    return {
+        "file_key": "fk_1",
+        "file_name": "作业书.pdf",
+        "resource_type": "file",
+        "chat_id": "c1",
+        "message_id": "m1",
+        "received_at": (NOW - timedelta(minutes=minutes_ago)).isoformat(timespec="seconds"),
+    }
+
+
+def test_stale_pending_file_is_ignored():
+    """隔了一场再发「作业书」，不该静默复用上一场的文件（D-46）。"""
+    outcome = route(_inbound("作业书"), {"pending_file": _pending(31)}, None, now=NOW)
+    assert _texts(outcome) == [replies.FILE_MISSING]
+    assert outcome.pipeline == ""
+
+
+def test_fresh_pending_file_still_works():
+    for minutes in (0, 29, 30):           # 恰好 30 分钟还算新鲜（TTL 判的是"超过"）
+        outcome = route(_inbound("作业书"), {"pending_file": _pending(minutes)}, None, now=NOW)
+        assert _texts(outcome) == [replies.PARSING], minutes
+        assert outcome.pipeline == "assignment"
+
+
+def test_pending_file_without_timestamp_stays_usable():
+    """老 state 没有 received_at：不因为缺字段就失效。"""
+    outcome = route(_inbound("作业书"), {"pending_file": {"file_key": "fk_1"}}, None, now=NOW)
+    assert _texts(outcome) == [replies.PARSING]
+    assert outcome.pipeline == "assignment"
 
 
 # ---------- 7 条前缀 ----------

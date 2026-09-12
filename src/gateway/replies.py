@@ -11,6 +11,7 @@ __all__ = [
     "COMMAND_LIST_TEXT",
     "FILE_RECEIVED",
     "FILE_MISSING",
+    "IMAGE_REJECTED",
     "PARSING",
     "PARSE_FAILED",
     "EXTRACT_REJECTED",
@@ -45,6 +46,7 @@ COMMAND_LIST_TEXT = (
 # ---- 作业书 / 拆解 主链路 ----
 FILE_RECEIVED = "已收到文件：{name}。回复「作业书」我来解析。"
 FILE_MISSING = "请先把作业书文件发给我，再回复「作业书」。"
+IMAGE_REJECTED = "图片我读不了，作业书请发 PDF / Word / TXT 文件。"
 PARSING = "收到，正在解析作业书，大概需要半分钟…"
 PARSE_FAILED = "解析失败，请检查文件是否是文字版；或回复「作业书」重试。"
 EXTRACT_REJECTED = "这个文件没法用：{reason}"

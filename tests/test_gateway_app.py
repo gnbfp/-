@@ -1,5 +1,7 @@
 """M0 组装层单测：依赖注入 FakeSender / FakeDownloader / FakeLLM（方案 §9）。"""
 
+from datetime import datetime
+
 import pytest
 
 from src.gateway import app as app_module
@@ -148,10 +150,16 @@ def _seed_pending_file(store):
                 "resource_type": "file",
                 "message_id": "m1",
                 "chat_id": "c1",
-                "received_at": "2026-09-12T13:30:00",
+                # 必须是"刚刚"：pending_file 有 30 分钟有效期（D-46），
+                # 写死的时间戳会让整个夹具随时间流逝变成过期缓存
+                "received_at": _now(),
             },
         }
     )
+
+
+def _now() -> str:
+    return datetime.now().isoformat(timespec="seconds")
 
 
 def test_file_message_is_cached_with_resource_type(env):
@@ -294,7 +302,7 @@ def test_a_new_file_arriving_mid_pipeline_survives(env):
                         "resource_type": "file",
                         "message_id": "m2",
                         "chat_id": "c1",
-                        "received_at": "2026-09-12T13:31:00",
+                        "received_at": _now(),
                     },
                 }
             )

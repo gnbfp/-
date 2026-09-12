@@ -14,7 +14,7 @@ D-42（文字与附件必然是两条消息）、M0 网关方案 §4 / §5 / §6
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Sequence
 
 from src.gateway import register, replies
@@ -23,6 +23,7 @@ from src.gateway.events import Inbound, Mention, Outcome, reply
 __all__ = [
     "PROPOSAL_PREFIXES",
     "COMPLETE_PATTERN",
+    "PENDING_FILE_TTL",
     "strip_mentions",
     "route",
     "remember_file",
@@ -33,6 +34,11 @@ PROPOSAL_PREFIXES = ("我想提议：", "我想提议:")
 COMPLETE_PATTERN = re.compile(r"^完成\s*[Tt]\d+")
 
 _MENTION_PLACEHOLDER = re.compile(r"@_user_\d+")
+
+# 缓存文件的有效期（D-46，工程默认，可推翻）。``pending_file`` 是**落盘**的、关掉重启仍在，
+# 而唯一的清除时机是「作业书」跑完 —— 所以"发过文件、没接着说「作业书」"的残留会一直留着，
+# 跨场次录制时会静默复用一份旧作业书。30 分钟对一场演示足够，只拦跨场次串味。
+PENDING_FILE_TTL = timedelta(minutes=30)
 
 
 def strip_mentions(text: str, mentions: Sequence[Mention] = ()) -> str:
@@ -69,10 +75,12 @@ def route(
         return Outcome()
 
     # 1. 文件：只缓存，不干活（D-42：文字和附件必然是两条消息）
-    #    图片**不进缓存**（必修 3）：群里随手发张图会把刚发来的作业书 PDF 挤掉，
-    #    随后「作业书」下载到的是图、报错完全看不出真实原因 ⇒ 静默丢弃。
     if inbound.message_type == "file":
         return remember_file(inbound, state, now)
+    #    图片：读不了就直说（用户 2026-09-12 拍板，不再静默），但仍然**不入缓存** ——
+    #    必修 3 的底线是"一张图不能把刚发来的作业书 PDF 挤掉"。其余类型保持静默。
+    if inbound.message_type == "image":
+        return Outcome(replies=(reply(inbound, replies.IMAGE_REJECTED),))
     if inbound.message_type != "text":
         return Outcome()
 
@@ -99,7 +107,7 @@ def route(
 
     # 3. 前缀精确匹配（7 条，无重叠）
     if text.startswith("作业书"):
-        return _assignment(inbound, state)
+        return _assignment(inbound, state, now)
     if text.startswith("拆解"):
         return Outcome(
             replies=(reply(inbound, replies.DECOMPOSING if has_rubric else replies.NEEDS_RUBRIC),),
@@ -140,11 +148,31 @@ def remember_file(inbound: Inbound, state: dict, now: datetime | None = None) ->
     )
 
 
-def _assignment(inbound: Inbound, state: dict) -> Outcome:
-    if not _pending_file(state):
+def _assignment(inbound: Inbound, state: dict, now: datetime | None = None) -> Outcome:
+    if not _pending_file(state, now):
         return Outcome(replies=(reply(inbound, replies.FILE_MISSING),))
     return Outcome(replies=(reply(inbound, replies.PARSING),), pipeline="assignment")
 
 
-def _pending_file(state: dict) -> dict:
-    return ((state or {}).get("pending_file") or {}) if isinstance(state, dict) else {}
+def _pending_file(state: dict, now: datetime | None = None) -> dict:
+    """有没有**可用**的缓存文件 —— 唯一的入口，有效期也在这里判（D-46）。
+
+    过期就当没有：调用方自然回既有的 ``FILE_MISSING``，``pipeline`` 也不会起。
+    """
+    if not isinstance(state, dict):
+        return {}
+    pending = state.get("pending_file") or {}
+    if not pending or _stale_pending(pending, now):
+        return {}
+    return pending
+
+
+def _stale_pending(pending: dict, now: datetime | None = None) -> bool:
+    raw = pending.get("received_at")
+    if not raw:
+        return False                      # 老 state 没有这个字段：不因此失效
+    try:
+        received = datetime.fromisoformat(str(raw))
+    except ValueError:
+        return False                      # 时间戳脏了就当没有 TTL，别因脏数据把文件丢掉
+    return (now or datetime.now()) - received > PENDING_FILE_TTL
