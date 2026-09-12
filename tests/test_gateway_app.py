@@ -274,6 +274,72 @@ def test_unmatched_text_gets_command_list(env):
     assert sender.texts == [replies.COMMAND_LIST_TEXT]
 
 
+def test_a_new_file_arriving_mid_pipeline_survives(env):
+    """必修 5 的现场：发 A → 回「作业书」（后台跑十几秒）→ 期间来了 B → A 收尾。
+
+    B 不能被 A 的收尾顺手删掉，否则下次「作业书」会回"请先把作业书文件发给我"，
+    而用户明明刚发过。
+    """
+    gateway, store, sender, _ = env
+
+    class _NewFileDuringPipeline(FakeDownloader):
+        def download(self, pending, target_dir):
+            path = super().download(pending, target_dir)
+            store.save_state(
+                {
+                    "awaiting": None,
+                    "pending_file": {
+                        "file_key": "fk_2",
+                        "file_name": "作业书-B.pdf",
+                        "resource_type": "file",
+                        "message_id": "m2",
+                        "chat_id": "c1",
+                        "received_at": "2026-09-12T13:31:00",
+                    },
+                }
+            )
+            return path
+
+    gateway.downloader = _NewFileDuringPipeline()
+    _seed_pending_file(store)                      # A: m1 / fk_1
+
+    gateway.handle(_inbound("作业书"))
+
+    assert "评分点核对清单" in sender.texts[1]
+    assert store.load_state()["pending_file"]["file_key"] == "fk_2"      # B 还在
+
+
+def test_forget_pending_file_only_clears_its_own(env):
+    gateway, store, _, _ = env
+    _seed_pending_file(store)                      # message_id = m1
+
+    gateway._forget_pending_file("m2")             # 不是它消费的那个
+    assert store.load_state()["pending_file"]["file_key"] == "fk_1"
+
+    gateway._forget_pending_file("m1")
+    assert "pending_file" not in store.load_state()
+
+
+def test_register_window_does_not_eat_commands(env):
+    """必修 1 的现场：发过「登记」不填表，群里其它指令照常可用。"""
+    gateway, store, sender, downloader = env
+    _seed_pending_file(store)
+    store.save_state(
+        {
+            **store.load_state(),
+            "awaiting": "register",
+            "register": {"stage": "collect", "expires_at": None, "initiator_open_id": "ou_user"},
+        }
+    )
+
+    gateway.handle(_inbound("今天天气不错"))
+    assert sender.texts[-1] == replies.COMMAND_LIST_TEXT
+
+    gateway.handle(_inbound("作业书"))
+    assert downloader.calls and downloader.calls[0]["file_key"] == "fk_1"
+    assert any("评分点核对清单" in text for text in sender.texts)
+
+
 def test_register_collect_routes_through_mentions(env):
     gateway, store, sender, _ = env
     gateway.handle(_inbound("登记"))

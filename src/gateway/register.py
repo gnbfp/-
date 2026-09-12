@@ -22,27 +22,82 @@ from typing import Sequence
 from src.gateway import replies
 from src.gateway.events import Inbound, Mention, Outcome, reply
 
-__all__ = ["REGISTER_TTL", "register_begin", "register_step"]
+__all__ = [
+    "REGISTER_TTL",
+    "REGISTER_CANCEL_WORDS",
+    "is_cancel",
+    "takes_over",
+    "register_begin",
+    "register_step",
+    "register_cancel",
+]
 
 REGISTER_TTL = timedelta(minutes=5)
 _AGREE = "同意"
+# 逃生词：登记窗口的出口。没有它，一次误触「登记」就把整个群的指令都吃掉（必修 1）。
+REGISTER_CANCEL_WORDS = ("取消登记", "取消")
 
 
 def register_begin(inbound: Inbound, state: dict, now: datetime | None = None) -> Outcome:
-    """收到「登记」：回空白表单，进入 collect 阶段。"""
+    """收到「登记」：回空白表单，进入 collect 阶段（只有发起人能把它填完）。"""
     new_state = {
         **(state or {}),
         "awaiting": "register",
-        "register": {"stage": "collect", "leader": None, "members": [], "expires_at": None},
+        "register": {
+            "stage": "collect",
+            "initiator_open_id": inbound.sender_open_id,
+            "leader": None,
+            "members": [],
+            # collect 也要有 TTL：原先设 None ⇒ 发一次「登记」不填表就永久锁群（必修 1）
+            "expires_at": _iso((now or datetime.now()) + REGISTER_TTL),
+        },
     }
     return Outcome(replies=(reply(inbound, replies.REGISTER_FORM),), state=new_state)
+
+
+def is_cancel(text: str) -> bool:
+    """这句话是不是登记窗口的逃生词。"""
+    return (text or "").strip() in REGISTER_CANCEL_WORDS
+
+
+def takes_over(block: dict, inbound: Inbound) -> bool:
+    """这条消息归登记状态机管吗？（必修 1 的边界）
+
+    * **confirm**：机器人自己说了「回复「同意」保存，回复别的就作废」⇒ 原文照单全收；
+    * **collect**：表单必须 @ 人（§7.7）⇒ 只认带 @ 的消息。其余落到 7 条前缀，
+      否则一次误触「登记」不填表，就把整个群的指令全吃掉。
+    """
+    if (block or {}).get("stage") == "confirm":
+        return True
+    return bool(inbound.mentions)
+
+
+def register_cancel(inbound: Inbound, state: dict, now: datetime | None = None) -> Outcome:
+    """逃生词：主动退出登记窗口（必修 1）。同样只认发起人，旁人说了不算。"""
+    block = dict((state or {}).get("register") or {})
+    initiator = block.get("initiator_open_id")
+    if initiator and initiator != inbound.sender_open_id:
+        return Outcome()
+    return Outcome(replies=(reply(inbound, replies.REGISTER_CANCELLED),), state=_cleared(state))
 
 
 def register_step(
     text: str, inbound: Inbound, state: dict, now: datetime | None = None
 ) -> Outcome:
-    """awaiting=register 时的分流：collect（填表）/ confirm（确认）。"""
+    """awaiting=register 时的分流：collect（填表）/ confirm（确认）。
+
+    三条纪律（外审必修 1、2）：
+      * **过期先判**，collect 与 confirm 一视同仁 —— 超时即作废放行；
+      * **非发起人静默忽略**：不推进、不作废、不回话。旁人说一句「好」不该把登记
+        作废，也不该收到一长串表单刷屏（§7.7 的「组长回「同意」」）；
+      * 状态缺胳膊少腿 → 作废，别把人卡在 waiting 里。
+    """
     block = dict((state or {}).get("register") or {})
+    initiator = block.get("initiator_open_id")
+    if initiator and initiator != inbound.sender_open_id:
+        return Outcome()
+    if _expired(block, now):
+        return Outcome(replies=(reply(inbound, replies.REGISTER_EXPIRED),), state=_cleared(state))
     stage = block.get("stage")
     if stage == "collect":
         return _collect(text, inbound, state, block, now)
@@ -77,6 +132,8 @@ def _collect(
     expires_at = _iso((now or datetime.now()) + REGISTER_TTL)
     new_block = {
         "stage": "confirm",
+        # 必须把发起人带过去：confirm 阶段全靠它挡住"旁人一句「同意」就落盘"（必修 2）
+        "initiator_open_id": block.get("initiator_open_id") or inbound.sender_open_id,
         "leader": {"open_id": leader_mention.open_id, "name": _display(leader_mention)},
         "members": [{"open_id": m.open_id, "name": _display(m)} for m in others],
         "expires_at": expires_at,
@@ -102,9 +159,6 @@ def _collect(
 def _confirm(
     text: str, inbound: Inbound, state: dict, block: dict, now: datetime | None
 ) -> Outcome:
-    if _expired(block, now):
-        return Outcome(replies=(reply(inbound, replies.REGISTER_EXPIRED),), state=_cleared(state))
-
     if text.strip() != _AGREE:
         return Outcome(
             replies=(reply(inbound, replies.REGISTER_CANCELLED),), state=_cleared(state)

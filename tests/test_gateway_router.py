@@ -5,7 +5,6 @@ from src.gateway.events import Inbound, Mention, Outcome
 from src.gateway.router import (
     COMPLETE_PATTERN,
     PROPOSAL_PREFIXES,
-    pipeline_kind,
     remember_file,
     route,
     strip_mentions,
@@ -65,9 +64,18 @@ def test_file_message_is_cached_not_processed():
     assert outcome.download_file_key == ""          # 下载归 app 层
 
 
-def test_image_message_is_cached_too():
-    outcome = route(_inbound("", message_type="image", file_key="ik_1"), {}, None)
-    assert outcome.state["pending_file"]["file_key"] == "ik_1"
+def test_image_message_is_dropped_not_cached():
+    """必修 3：图片静默丢弃，不回话也不进缓存。"""
+    assert route(_inbound("", message_type="image", file_key="ik_1"), {}, None) == Outcome()
+
+
+def test_image_does_not_evict_a_cached_file():
+    """必修 3 的现场：先发 PDF 再接一张图，缓存里必须还是那个 PDF。"""
+    state = route(
+        _inbound("", message_type="file", file_key="fk_1", file_name="作业书.pdf"), {}, None
+    ).state
+    assert route(_inbound("", message_type="image", file_key="ik_1"), state, None) == Outcome()
+    assert state["pending_file"]["file_key"] == "fk_1"
 
 
 def test_other_message_types_are_ignored():
@@ -164,6 +172,47 @@ def test_number_outside_waiting_state_is_not_a_command():
     assert _texts(route(_inbound("2"), {}, None)) == [replies.COMMAND_LIST_TEXT]
 
 
+# ---------- 登记窗口不是死锁（必修 1）----------
+
+
+def test_collect_stage_lets_plain_commands_through():
+    """死锁回归：collect 阶段没有 @ 的消息必须照常走 7 条前缀。
+
+    修之前：发一次「登记」不填表，全群的指令都被吃掉、且永不超时。
+    """
+    state = {"awaiting": "register", "register": {"stage": "collect", "expires_at": None}}
+    assert _texts(route(_inbound("方向"), state, None)) == [replies.PLACEHOLDER_DIRECTION]
+    assert _texts(route(_inbound("作业书"), state, None)) == [replies.FILE_MISSING]
+    assert _texts(route(_inbound("今天天气不错"), state, None)) == [replies.COMMAND_LIST_TEXT]
+    # 有缓存文件时照常干活：窗口不吃指令
+    with_file = {**state, "pending_file": {"file_key": "fk_1", "message_id": "m0"}}
+    outcome = route(_inbound("作业书"), with_file, None)
+    assert _texts(outcome) == [replies.PARSING]
+    assert outcome.pipeline == "assignment"
+
+
+def test_register_then_nonsense_returns_command_list():
+    """D5 验收第 5 步：发过「登记」之后再发一句胡话，要回指令列表。"""
+    state = route(_inbound("登记"), {}, None).state
+    outcome = route(_inbound("今天天气不错"), state, None)
+    assert _texts(outcome) == [replies.COMMAND_LIST_TEXT]
+    assert outcome.state is None                      # 还留在窗口里，等填表或取消
+
+
+def test_escape_word_gets_out_of_the_register_window():
+    """必修 1：显式逃生词必须有出口。"""
+    state = route(_inbound("登记"), {}, None).state
+    outcome = route(_inbound("取消登记"), state, None)
+    assert _texts(outcome) == [replies.REGISTER_CANCELLED]
+    assert outcome.state["awaiting"] is None
+
+
+def test_confirm_stage_still_takes_plain_text():
+    """confirm 阶段机器人自己说了「回复「同意」保存」⇒ 不加 @ 也要接住。"""
+    state = {"awaiting": "register", "register": {"stage": "confirm", "expires_at": None}}
+    assert _texts(route(_inbound("不同意"), state, None)) == [replies.REGISTER_CANCELLED]
+
+
 # ---------- 边界 ----------
 
 
@@ -178,19 +227,37 @@ def test_prefix_tolerates_surrounding_spaces():
     assert _texts(route(_inbound("  作业书  "), state, None)) == [replies.PARSING]
 
 
-# ---------- 后台重活判定 ----------
+# ---------- 后台重活判定（必修 4：与「回什么话」同源）----------
 
 
-def test_pipeline_kind_for_assignment_needs_pending_file():
-    assert pipeline_kind(_inbound("作业书"), {"pending_file": {"file_key": "k"}}) == "assignment"
-    assert pipeline_kind(_inbound("作业书"), {}) == ""
+def test_pipeline_is_decided_in_one_place():
+    """回执才配起重活；兜底、缺料、无效输入一律不起。"""
+    window = {"awaiting": "register", "register": {"stage": "collect", "expires_at": None}}
+    cases = [
+        ({}, _inbound("作业书"), False),                        # 没有缓存文件
+        ({"pending_file": {"file_key": "k"}}, _inbound("作业书"), True),
+        ({}, _inbound("拆解"), False),                          # 没有评分点
+        ({}, _inbound("今天天气不错"), False),
+        (window, _inbound("方向"), False),                      # 登记窗口里也不起
+        ({}, _inbound("", message_type="file", file_key="k"), False),
+        ({}, _inbound("拆解", sender_type="app"), False),
+    ]
+    for state, inbound, expected in cases:
+        assert bool(route(inbound, state, None).pipeline) is expected, inbound.text
 
 
-def test_pipeline_kind_for_decompose_needs_rubric():
-    assert pipeline_kind(_inbound("拆解"), {}, has_rubric=True) == "decompose"
-    assert pipeline_kind(_inbound("拆解"), {}, has_rubric=False) == ""
+def test_decompose_ack_carries_the_pipeline():
+    assert route(_inbound("拆解"), {}, None, has_rubric=True).pipeline == "decompose"
 
 
-def test_pipeline_kind_ignores_files_and_bot_messages():
-    assert pipeline_kind(_inbound("", message_type="file"), {"pending_file": {"file_key": "k"}}) == ""
-    assert pipeline_kind(_inbound("拆解", sender_type="app"), {}, has_rubric=True) == ""
+def test_pipeline_never_fires_without_the_matching_ack():
+    """必修 4 的核心不变式：起重活 ⇔ 回的就是那句回执。"""
+    window = {"awaiting": "register", "register": {"stage": "collect", "expires_at": None}}
+    for state, inbound, kwargs in (
+        (window, _inbound("拆解"), {"has_rubric": False}),
+        (window, _inbound("作业书"), {}),
+        (window, _inbound("完成 T3"), {}),
+    ):
+        outcome = route(inbound, state, None, **kwargs)
+        assert outcome.pipeline == ""
+        assert _texts(outcome) != [replies.PARSING]

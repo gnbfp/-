@@ -20,7 +20,7 @@ from src.config import ConfigError, load_config
 from src.gateway import replies
 from src.gateway.client import FeishuClient
 from src.gateway.events import Inbound, Outcome, reply, to_inbound
-from src.gateway.router import pipeline_kind, route
+from src.gateway.router import route
 from src.intelligence.coverage import coverage_loop
 from src.intelligence.decompose import decompose
 from src.intelligence.extract import (
@@ -66,10 +66,11 @@ class Gateway:
         outcome = route(inbound, state, self.store.load_members(), has_rubric=has_rubric)
         self._deliver(outcome)
 
-        kind = pipeline_kind(inbound, state, has_rubric)
-        if kind:
+        # 重活起不起，route() 已经判过（Outcome.pipeline）—— 这里不再自己判一遍，
+        # 否则"回了「表单没看懂」却照样跑 M1"（必修 4）
+        if outcome.pipeline:
             threading.Thread(
-                target=self.run_pipeline, args=(kind, inbound, state), daemon=True
+                target=self.run_pipeline, args=(outcome.pipeline, inbound, state), daemon=True
             ).start()
         return outcome
 
@@ -98,7 +99,8 @@ class Gateway:
             self.sender.send(reply(inbound, f"{replies.PARSE_FAILED}（{type(exc).__name__}）"))
         finally:
             if kind == "assignment":
-                self._forget_pending_file()
+                pending = (state or {}).get("pending_file") or {}
+                self._forget_pending_file(pending.get("message_id", ""))
 
     def _run_assignment(self, inbound: Inbound, state: dict) -> None:
         """作业书 → 下载 → 抽文本 → M1 → **必须续跑 M3** → 核对清单发群（方案 §7）。"""
@@ -143,9 +145,17 @@ class Gateway:
             reply(inbound, render_checklist(meta, points, result.cards, result))
         )
 
-    def _forget_pending_file(self) -> None:
-        """消费掉缓存：成败都不留旧文件，免得下次静默复用一份过期作业书。"""
+    def _forget_pending_file(self, file_message_id: str) -> None:
+        """只清**这一轮消费掉的那个文件**（按 message_id 认）。
+
+        跑 M1 的十几秒里群里可能又来了新 PDF：无脑 pop 会把新文件一起删掉，之后
+        「作业书」回「请先把作业书文件发给我」—— 用户明明刚发过（必修 5）。
+        成败都清（不留旧文件），但只在还是同一个文件时才清。
+        """
         state = self.store.load_state()
+        pending = state.get("pending_file") or {}
+        if (pending.get("message_id") or "") != (file_message_id or ""):
+            return
         state.pop("pending_file", None)
         self.store.save_state(state)
 

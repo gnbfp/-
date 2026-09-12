@@ -3,15 +3,21 @@
 from datetime import datetime, timedelta
 
 from src.gateway import replies
-from src.gateway.events import Inbound, Mention
-from src.gateway.register import REGISTER_TTL, register_begin, register_step
+from src.gateway.events import Inbound, Mention, Outcome
+from src.gateway.register import (
+    REGISTER_TTL,
+    is_cancel,
+    register_begin,
+    register_cancel,
+    register_step,
+)
 from src.models import Roster
 
 NOW = datetime(2026, 9, 12, 13, 30, 0)
 FORM = "登记\n组长：@_user_1\n组员：@_user_2 @_user_3"
 
 
-def _inbound(text="", mentions=()):
+def _inbound(text="", mentions=(), sender_open_id="ou_initiator"):
     return Inbound(
         chat_id="c1",
         chat_type="group",
@@ -19,7 +25,7 @@ def _inbound(text="", mentions=()):
         text=text,
         mentions=tuple(mentions),
         sender_type="user",
-        sender_open_id="ou_initiator",
+        sender_open_id=sender_open_id,
         message_id="m1",
     )
 
@@ -37,6 +43,21 @@ def test_begin_returns_blank_form_and_waits_for_collect():
     assert replies.REGISTER_FORM in outcome.replies[0].text
     assert outcome.state["awaiting"] == "register"
     assert outcome.state["register"]["stage"] == "collect"
+
+
+def test_begin_starts_the_collect_ttl_and_remembers_the_initiator():
+    """必修 1：collect 也要有 TTL —— 否则不填表就永久锁群。"""
+    block = register_begin(_inbound("登记"), {}, NOW).state["register"]
+    assert block["expires_at"] == (NOW + REGISTER_TTL).isoformat(timespec="seconds")
+    assert block["initiator_open_id"] == "ou_initiator"
+
+
+def test_collect_after_expiry_cancels():
+    state = register_begin(_inbound("登记"), {}, NOW).state
+    later = NOW + REGISTER_TTL + timedelta(seconds=1)
+    outcome = register_step(FORM, _inbound(FORM, _mentions()), state, later)
+    assert outcome.replies[0].text == replies.REGISTER_EXPIRED
+    assert outcome.state["awaiting"] is None
 
 
 def test_collect_ok_moves_to_confirm():
@@ -110,3 +131,53 @@ def test_confirm_just_before_expiry_still_saves():
     state = register_step(FORM, _inbound(FORM, _mentions()), state, NOW).state
     nearly = NOW + REGISTER_TTL - timedelta(seconds=1)
     assert register_step("同意", _inbound("同意"), state, nearly).save_roster is not None
+
+
+# ---------- 只有发起人能推进（必修 2）----------
+
+
+def test_stranger_cannot_advance_the_form():
+    """旁人在 collect 阶段说话 → 静默，不推进、也不回一长串表单刷屏。"""
+    state = register_begin(_inbound("登记"), {}, NOW).state
+    form = _inbound(FORM, _mentions(), sender_open_id="ou_stranger")
+    assert register_step(FORM, form, state, NOW) == Outcome()
+
+
+def test_stranger_cannot_cancel_the_pending_registration():
+    """confirm 阶段旁人说一句「好」不该把登记作废。"""
+    state = register_begin(_inbound("登记"), {}, NOW).state
+    state = register_step(FORM, _inbound(FORM, _mentions()), state, NOW).state
+    stranger = _inbound("好", sender_open_id="ou_stranger")
+    assert register_step("好", stranger, state, NOW) == Outcome()
+
+
+def test_stranger_cannot_confirm_the_roster():
+    """文档 §7.7 写的是「组长回「同意」」：旁人同意也不落盘。"""
+    state = register_begin(_inbound("登记"), {}, NOW).state
+    state = register_step(FORM, _inbound(FORM, _mentions()), state, NOW).state
+    stranger = _inbound("同意", sender_open_id="ou_stranger")
+    assert register_step("同意", stranger, state, NOW).save_roster is None
+    assert register_step("同意", stranger, state, NOW) == Outcome()
+
+
+# ---------- 逃生词（必修 1）----------
+
+
+def test_cancel_words_are_recognised():
+    assert is_cancel("取消登记")
+    assert is_cancel(" 取消 ")
+    assert not is_cancel("取消一下")
+    assert not is_cancel("")
+
+
+def test_initiator_can_cancel_the_window():
+    state = register_begin(_inbound("登记"), {}, NOW).state
+    outcome = register_cancel(_inbound("取消登记"), state, NOW)
+    assert outcome.replies[0].text == replies.REGISTER_CANCELLED
+    assert outcome.state["awaiting"] is None
+
+
+def test_stranger_cannot_cancel_the_window():
+    state = register_begin(_inbound("登记"), {}, NOW).state
+    stranger = _inbound("取消登记", sender_open_id="ou_stranger")
+    assert register_cancel(stranger, state, NOW) == Outcome()

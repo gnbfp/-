@@ -103,7 +103,10 @@ class FeishuClient:
         if not response.success():
             raise FeishuError(f"下载失败 code={response.code} msg={response.msg}")
 
-        name = _safe_name(pending.get("file_name") or f"{pending.get('file_key', 'file')}.bin")
+        # 名字退化成 .bin 时带上 resource_type：不然「不认识的文件类型 .bin」看不出
+        # 下到的到底是文件还是图（必修 3）
+        fallback = f"{pending.get('resource_type', 'file')}-{pending.get('file_key', 'file')}.bin"
+        name = _safe_name(pending.get("file_name") or fallback)
         target = Path(target_dir) / name
         target.parent.mkdir(parents=True, exist_ok=True)
         body = response.file.read() if response.file is not None else b""

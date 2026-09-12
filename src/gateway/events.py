@@ -74,12 +74,16 @@ class Outcome:
       方案 §3 的 Outcome 只有前三个字段，这里多一个的原因：名单内容是状态机在
       ``register.py`` 里解析出来的，让 app 层"再推一遍"等于把判定逻辑复制一份
       （违反"判定只有一处"）。多这一个纯数据字段，状态机仍然只有一个出口。
+    ``pipeline``：非空 = app 层要起后台重活（``"assignment"`` / ``"decompose"``）。
+      由 ``route()`` 一次算出，app 层只读不判 —— 否则「回什么话」与「起不起重活」
+      会各判一遍，给出互相矛盾的结果（外审必修 4：状态窗口吃掉指令却照样烧 LLM）。
     """
 
     replies: tuple[Reply, ...] = ()
     state: dict | None = None
     download_file_key: str = ""
     save_roster: dict | None = None
+    pipeline: str = ""
 
 
 def reply(inbound: Inbound, text: str) -> Reply:

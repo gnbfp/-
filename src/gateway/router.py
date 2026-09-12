@@ -26,7 +26,6 @@ __all__ = [
     "strip_mentions",
     "route",
     "remember_file",
-    "pipeline_kind",
 ]
 
 # 7 条前缀里两条带变体：提议的冒号全半角、完成的 Tn 容忍空格与大小写。
@@ -34,7 +33,6 @@ PROPOSAL_PREFIXES = ("我想提议：", "我想提议:")
 COMPLETE_PATTERN = re.compile(r"^完成\s*[Tt]\d+")
 
 _MENTION_PLACEHOLDER = re.compile(r"@_user_\d+")
-_RESOURCE_TYPES = ("file", "image")
 
 
 def strip_mentions(text: str, mentions: Sequence[Mention] = ()) -> str:
@@ -62,13 +60,18 @@ def route(
     ``roster`` 预留给 M2（投票分母）/ M5（组长身份）；M0 的登记不依赖它。
     ``has_rubric`` 由 app 层从 ``data/rubric.json`` 读出来传进来 —— router 自己不读文件，
     但仍然能对「拆解」给出正确回复（没有评分点 vs 重跑）。
+
+    **重活也在这里判**（``Outcome.pipeline``）：回什么话与起不起 M1/M3 必须同源，
+    分两处判就会出现"回了「表单没看懂」却照样烧一次 LLM"（必修 4）。
     """
     # 0. 机器人自己的消息：权限里开了 include_bot，这条不丢就会自己回自己
     if inbound.sender_type == "app":
         return Outcome()
 
-    # 1. 文件 / 图片：只缓存，不干活（D-42：文字和附件必然是两条消息）
-    if inbound.message_type in _RESOURCE_TYPES:
+    # 1. 文件：只缓存，不干活（D-42：文字和附件必然是两条消息）
+    #    图片**不进缓存**（必修 3）：群里随手发张图会把刚发来的作业书 PDF 挤掉，
+    #    随后「作业书」下载到的是图、报错完全看不出真实原因 ⇒ 静默丢弃。
+    if inbound.message_type == "file":
         return remember_file(inbound, state, now)
     if inbound.message_type != "text":
         return Outcome()
@@ -80,9 +83,15 @@ def route(
     # 2. 状态优先：裸数字/表单怎么解释，全看 state.json 的 awaiting
     awaiting = (state or {}).get("awaiting")
     if awaiting == "register":
-        # 登记表单要吃**原文**：@ 占位符（@_user_1）正是"这行 @ 了谁"的唯一线索，
-        # 剥掉就再也对不上 open_id 了（D-34：id 只从 @ 结构里取）
-        return register.register_step(inbound.text, inbound, state, now)
+        # 先给出口：没有逃生词，一次误触「登记」不填表就吃掉整个群的所有指令（必修 1）
+        if register.is_cancel(text):
+            return register.register_cancel(inbound, state, now)
+        # 谁归状态机管由 register.takes_over() 一条规则说了算（collect 只认带 @ 的表单，
+        # confirm 全收）；不吃的话继续往下走 7 条前缀，不然窗口就把指令锁死了（必修 1）
+        if register.takes_over((state or {}).get("register") or {}, inbound):
+            # 表单要吃**原文**：@ 占位符（@_user_1）是"这行 @ 了谁"的唯一线索，
+            # 剥掉就再也对不上 open_id 了（D-34：id 只从 @ 结构里取）
+            return register.register_step(inbound.text, inbound, state, now)
     if awaiting == "vote":
         return Outcome(replies=(reply(inbound, replies.PLACEHOLDER_VOTE),))
     if awaiting == "preference":
@@ -93,7 +102,8 @@ def route(
         return _assignment(inbound, state)
     if text.startswith("拆解"):
         return Outcome(
-            replies=(reply(inbound, replies.DECOMPOSING if has_rubric else replies.NEEDS_RUBRIC),)
+            replies=(reply(inbound, replies.DECOMPOSING if has_rubric else replies.NEEDS_RUBRIC),),
+            pipeline="decompose" if has_rubric else "",
         )
     if text.startswith("方向"):
         return Outcome(replies=(reply(inbound, replies.PLACEHOLDER_DIRECTION),))
@@ -119,7 +129,7 @@ def remember_file(inbound: Inbound, state: dict, now: datetime | None = None) ->
     pending = {
         "file_key": inbound.file_key,
         "file_name": inbound.file_name,
-        "resource_type": "image" if inbound.message_type == "image" else "file",
+        "resource_type": "file",          # 当前只缓存文件；字段集见 D-45
         "chat_id": inbound.chat_id,
         "message_id": inbound.message_id,
         "received_at": (now or datetime.now()).isoformat(timespec="seconds"),
@@ -130,25 +140,10 @@ def remember_file(inbound: Inbound, state: dict, now: datetime | None = None) ->
     )
 
 
-def pipeline_kind(inbound: Inbound, state: dict, has_rubric: bool = False) -> str:
-    """这条消息要不要起后台重活？返回 ``"assignment"`` / ``"decompose"`` / ``""``。
-
-    对应方案 §6 的 ``needs_m1_m3()``；把「拆解」那条重跑也并进来，app 层只判一次。
-    """
-    if inbound.sender_type == "app" or inbound.message_type != "text":
-        return ""
-    text = strip_mentions(inbound.text, inbound.mentions).strip()
-    if text.startswith("作业书"):
-        return "assignment" if _pending_file(state) else ""
-    if text.startswith("拆解"):
-        return "decompose" if has_rubric else ""
-    return ""
-
-
 def _assignment(inbound: Inbound, state: dict) -> Outcome:
     if not _pending_file(state):
         return Outcome(replies=(reply(inbound, replies.FILE_MISSING),))
-    return Outcome(replies=(reply(inbound, replies.PARSING),))
+    return Outcome(replies=(reply(inbound, replies.PARSING),), pipeline="assignment")
 
 
 def _pending_file(state: dict) -> dict:
