@@ -338,7 +338,7 @@ schedule 每天固定时间扫描 data/assignments.json
 | 项 | 说明 |
 |---|---|
 | Python | 3.10+ |
-| **飞书** | 企业自建应用 + 机器人能力 + WebSocket 长连接（**已实测通过**）。**实测可用且已开通的权限组合（2026-09-12）**：`im:message:readonly`（读单聊 + 群组消息）、`im:message.group_msg.include_bot:read`（含机器人消息的群消息）、`im:message.p2p_msg:readonly`（私聊）、`im:message:send_as_bot`（发消息）、`im:message:update`、`im:resource`（下载文件资源）。另开了 `im:message:send_multi_depts` / `im:message:send_multi_users`，本项目未用到（催办与私聊都按单个 `open_id` 发），可留可撤。**坑**：`im:message.group_msg.include_bot:read` 会让**机器人自己的消息也回来** ⇒ 路由必须先滤 `sender_type == "app"`。诊断：`python -m tools.probe_feishu` |
+| **飞书** | 企业自建应用 + 机器人能力 + WebSocket 长连接（**已实测通过**）。**实测可用且已开通的权限组合（2026-09-12）**：`im:message:readonly`（读单聊 + 群组消息）、`im:message.group_msg.include_bot:read`（含机器人消息的群消息）、`im:message.p2p_msg:readonly`（私聊）、`im:message:send_as_bot`（发消息）、`im:message:update`、`im:resource`（下载文件资源）。另开了 `im:message:send_multi_depts` / `im:message:send_multi_users`，本项目未用到（催办与私聊都按单个 `open_id` 发）。**权限集已冻结、不再裁剪**（D-44，2026-09-12）：后台实测开通的就是这 9 条（`im:resource` 在后台占两行：应用身份 + 用户身份），裁剪需重走发布审批并重测，收益不划算。**坑**：`im:message.group_msg.include_bot:read` 会让**机器人自己的消息也回来** ⇒ 路由必须先滤 `sender_type == "app"`。诊断：`python -m tools.probe_feishu` |
 | **LLM** | DeepSeek 或 GLM 的 API key（只服务三处：M1 / M2 / M3） |
 | 依赖库 | `lark-oapi`（飞书 SDK）、`PyMuPDF>=1.23.0`（PDF + `find_tables()`）、`python-docx`、`matplotlib`（甘特图）、一个 LLM SDK |
 

@@ -440,6 +440,7 @@ def check(cards, rubric):
 | D-41 | **真实作业书不入库**（2026-09-12）：定稿 §3.9 要收 15 份真实作业书构成评测集，但那是**别人课程的作业材料**（含版权与他人信息），放进交付物仓库不合适；且 M8 的可复现性靠的是**人工标注 + 独立脚本**，不是原文分发。因此：真实作业书只存本地、不 commit；入库的只有合成样本 `eval/samples/` 与标注 / 复算结果 |
 | D-42 | **作业书文件怎么进机器人**（2026-09-12，已实测）：① 飞书客户端**不允许**一条消息里同时有文字和附件 ⇒ 必然两条；② 实测 6/6 事件全收到、文件全部下载成功 ⇒ **主链路第一环不会断**，私聊与群两条路都可用；③ 对 M0 的硬要求：**缓存"最近一条收到的文件消息"**，与随后的 `作业书` 文字指令配对；④ 演示与验收用**私聊投递**（干扰最少），群投递同样可用。**已查明**：后台实际开通 `im:message.group_msg.include_bot:read` + `im:message:readonly`，故群里不带 @ 也收得到，详见 §7.1。出处：§7.1 + `tools/probe_feishu.py` |
 | D-43 | **抽取后必须做 CJK 字符归一化**（2026-09-12 实测，见 §7.5）：真实课程任务书 PDF 抽出的 2360 字里混进 176 个部首字符（U+2E80–U+2FDF），正常「一」出现 0 次。危害：M1 的 `quote` 原文子串硬校验会因"部首 vs 汉字"不一致而误判幻觉，且 M8 人工基线（人写正常汉字）无法与 agent 输出对齐。修法：逐字符 NFKC 覆盖 U+2E80–U+2FDF 与 U+F900–U+FAFF，再补显式小表（角/门/页/风/马），实测 176→0 且总长不变。**已实现**（2026-09-12）：`src/intelligence/extract.py` 的 `normalize_cjk()`，在 `extract_text()` 唯一出口统一调用；实测 176→0、总长不变 |
+| D-44 | **飞书权限集冻结在已实测的 9 条，不再裁剪**（用户 2026-09-12 拍板）：后台实际开通 `im:message:readonly`、`im:message.group_msg.include_bot:read`、`im:message.p2p_msg:readonly`、`im:message:send_as_bot`、`im:message:update`、`im:resource`（应用身份）、`im:message:send_multi_depts`、`im:message:send_multi_users`、`im:resource`（用户身份）。其中 `im:message:update`、两个 `send_multi_*` 与 `im:resource`（用户身份）本项目均未使用，但**决定保留不撤**：实测跑通的配置就是这一套，裁剪需重走发布审批并重测，收益不划算；材料中也不写"遵循最小权限原则"，避免与实际权限自相矛盾。见 `docs/ARCHITECTURE.md` §12.1 |
 
 ---
 
