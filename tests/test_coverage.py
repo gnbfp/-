@@ -68,11 +68,17 @@ def test_weight_missing_does_not_affect_coverage():
     assert result.ok
 
 
-def test_no_eligible_points_is_empty_true():
+def test_no_eligible_points_is_not_a_pass():
     result = coverage_loop([_card()], [_point("R1", status="ambiguous")])
     assert result.eligible == ()
-    assert result.ratio == 1.0
-    assert result.ok
+    assert result.ratio == 0.0            # 空分母不是达标
+    assert result.ok is False
+
+
+def test_no_eligible_points_and_no_cards_is_not_a_pass():
+    result = coverage_loop([], [_point("R1", status="ambiguous")])
+    assert result.ratio == 0.0
+    assert result.ok is False
 
 
 def test_no_cards_against_eligible_points_is_zero():

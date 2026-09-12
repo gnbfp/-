@@ -67,6 +67,13 @@ def test_all_ambiguous_rubric_is_refused():
     assert "拒拆" in failures[0]
 
 
+def test_all_ambiguous_reason_wins_over_empty_cards():
+    # 短路顺序：先看有没有可拆点，再看有没有卡（全模糊时"拒拆"更准确）
+    failures = check([], [_point("R1", status="ambiguous")])
+    assert len(failures) == 1
+    assert "拒拆" in failures[0]
+
+
 def test_ambiguous_points_may_be_referenced_without_error():
     rubric = [_point("R1"), _point("R2", status="ambiguous")]
     assert check([_card(refs=("R1", "R2"))], rubric) == []

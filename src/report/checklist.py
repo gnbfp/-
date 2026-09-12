@@ -54,10 +54,16 @@ def render_checklist(
         lines.append(f"      原文：{point.quote}")
 
     balance = balance_loop(cards)
+    if coverage.eligible:
+        coverage_line = (
+            f"覆盖率：{len(coverage.covered)}/{len(coverage.eligible)} = {coverage.ratio:.0%}"
+            "（循环口径：分母 = status=normal 的可拆点）"
+        )
+    else:
+        coverage_line = "覆盖率：无可拆点 → 拒拆（不是 100%）"
     lines += [
         "",
-        f"覆盖率：{len(coverage.covered)}/{len(coverage.eligible)} = {coverage.ratio:.0%}"
-        "（循环口径：分母 = status=normal 的可拆点）",
+        coverage_line,
         f"工时均衡：max/min = {balance.ratio:.2f}（上限 {BALANCE_LIMIT:g}）；"
         f"任务卡 {len(cards)} 张；生成 {result.generations} 轮",
     ]

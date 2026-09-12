@@ -43,15 +43,15 @@ class CoverageResult:
 
     @property
     def ratio(self) -> float:
-        """覆盖率 = 已覆盖的可拆点 / 可拆点。分母为空时取 1.0（空真）。"""
+        """覆盖率 = 已覆盖的可拆点 / 可拆点。**分母为空 → 0.0**（空分母不是达标）。"""
         if not self.eligible:
-            return 1.0
+            return 0.0
         return len(self.covered) / len(self.eligible)
 
     @property
     def ok(self) -> bool:
-        """循环退出判据：可拆点 100% 覆盖（§7.2 / §7.3）。"""
-        return not self.missing
+        """循环退出判据：可拆点 100% 覆盖（§7.2 / §7.3）。**空分母 → 不达标**。"""
+        return bool(self.eligible) and not self.missing
 
 
 @dataclass(frozen=True)

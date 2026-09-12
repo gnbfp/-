@@ -76,12 +76,11 @@ def check(cards: Sequence[TaskCard], rubric: Sequence[RubricPoint]) -> list[str]
       * ``max/min <= BALANCE_LIMIT``；工时取 0.5 地板防除零（``coverage.py``）
       * 全部评分点都是 ``ambiguous`` → 拒拆，转人工确认（§7.3 病态边界，与 T13 同类）
     """
-    if not cards:
-        return ["没有任何任务卡（cards 为空）"]
-
     coverage = coverage_loop(cards, rubric)
     if not coverage.eligible:
         return ["没有任何可拆评分点（全部为 ambiguous）→ 拒拆，转人工确认"]
+    if not cards:
+        return ["没有任何任务卡（cards 为空）"]
 
     failures: list[str] = []
     if coverage.missing:

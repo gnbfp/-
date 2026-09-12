@@ -54,3 +54,17 @@ def test_checklist_reports_pass_when_self_check_clean():
     assert "覆盖率：2/2 = 100%" in text
     assert "自检通过" in text
     assert "自检未达标" not in text
+
+
+def test_checklist_all_ambiguous_prints_no_percentage():
+    points = [
+        RubricPoint(id="R1", quote="内容充实", observable="不可核对", status="ambiguous", weight=100)
+    ]
+    result = DecomposeResult(
+        cards=(), failures=("没有任何可拆评分点（全部为 ambiguous）→ 拒拆",), generations=0
+    )
+    text = render_checklist(META, points, [], result)
+    assert "覆盖率：无可拆点 → 拒拆（不是 100%）" in text
+    # 固定文案里本来就有"不是 100%"；除此之外不许再格式化出任何百分比
+    assert text.count("%") == 1
+    assert "0/0" not in text
