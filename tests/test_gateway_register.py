@@ -151,6 +151,23 @@ def test_stranger_cannot_cancel_the_pending_registration():
     assert register_step("好", stranger, state, NOW) == Outcome()
 
 
+def test_expired_confirm_is_cleared_by_anyone_who_speaks():
+    """过期判在发起人之前：confirm 过期后谁说话都该把它清掉。
+
+    反过来的话，发起人不再开口时旁人的消息会被静默吞掉、awaiting 永远卡在 register。
+    """
+    state = register_begin(_inbound("登记"), {}, NOW).state
+    state = register_step(FORM, _inbound(FORM, _mentions()), state, NOW).state
+    later = NOW + REGISTER_TTL + timedelta(seconds=1)
+    stranger = _inbound("作业书", sender_open_id="ou_stranger")
+
+    outcome = register_step("作业书", stranger, state, later)
+
+    assert outcome.replies[0].text == replies.REGISTER_EXPIRED
+    assert outcome.state["awaiting"] is None
+    assert outcome.state["register"] is None
+
+
 def test_stranger_cannot_confirm_the_roster():
     """文档 §7.7 写的是「组长回「同意」」：旁人同意也不落盘。"""
     state = register_begin(_inbound("登记"), {}, NOW).state
@@ -181,3 +198,15 @@ def test_stranger_cannot_cancel_the_window():
     state = register_begin(_inbound("登记"), {}, NOW).state
     stranger = _inbound("取消登记", sender_open_id="ou_stranger")
     assert register_cancel(stranger, state, NOW) == Outcome()
+
+
+def test_escape_word_also_clears_an_expired_window():
+    """过期窗口里逃生词谁先说都只是清残留状态（与 register_step 同一条理）。"""
+    state = register_begin(_inbound("登记"), {}, NOW).state
+    later = NOW + REGISTER_TTL + timedelta(seconds=1)
+    stranger = _inbound("取消登记", sender_open_id="ou_stranger")
+
+    outcome = register_cancel(stranger, state, later)
+
+    assert outcome.replies[0].text == replies.REGISTER_EXPIRED
+    assert outcome.state["awaiting"] is None

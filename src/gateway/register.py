@@ -73,8 +73,14 @@ def takes_over(block: dict, inbound: Inbound) -> bool:
 
 
 def register_cancel(inbound: Inbound, state: dict, now: datetime | None = None) -> Outcome:
-    """逃生词：主动退出登记窗口（必修 1）。同样只认发起人，旁人说了不算。"""
+    """逃生词：主动退出登记窗口（必修 1）。只认发起人，旁人说了不算。
+
+    过期窗口是例外：它已经作废，逃生词谁先说都只是把残留状态清干净 —— 与
+    ``register_step`` 的「过期判在发起人之前」同一条理，免得卡住的 ``awaiting`` 没人能清。
+    """
     block = dict((state or {}).get("register") or {})
+    if _expired(block, now):
+        return Outcome(replies=(reply(inbound, replies.REGISTER_EXPIRED),), state=_cleared(state))
     initiator = block.get("initiator_open_id")
     if initiator and initiator != inbound.sender_open_id:
         return Outcome()
@@ -87,17 +93,19 @@ def register_step(
     """awaiting=register 时的分流：collect（填表）/ confirm（确认）。
 
     三条纪律（外审必修 1、2）：
-      * **过期先判**，collect 与 confirm 一视同仁 —— 超时即作废放行；
+      * **过期判在发起人之前**（顺序有讲究）：超时的窗口已经作废，谁说话都该把它清掉。
+        反过来的话，confirm 过期后若发起人不再开口，旁人的「作业书」「拆解」会被静默
+        吞掉、`awaiting` 永远卡在 ``register``。collect 与 confirm 一视同仁；
       * **非发起人静默忽略**：不推进、不作废、不回话。旁人说一句「好」不该把登记
         作废，也不该收到一长串表单刷屏（§7.7 的「组长回「同意」」）；
       * 状态缺胳膊少腿 → 作废，别把人卡在 waiting 里。
     """
     block = dict((state or {}).get("register") or {})
+    if _expired(block, now):
+        return Outcome(replies=(reply(inbound, replies.REGISTER_EXPIRED),), state=_cleared(state))
     initiator = block.get("initiator_open_id")
     if initiator and initiator != inbound.sender_open_id:
         return Outcome()
-    if _expired(block, now):
-        return Outcome(replies=(reply(inbound, replies.REGISTER_EXPIRED),), state=_cleared(state))
     stage = block.get("stage")
     if stage == "collect":
         return _collect(text, inbound, state, block, now)
