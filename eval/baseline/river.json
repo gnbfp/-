@@ -3,7 +3,7 @@
   "title": "项目简介：河流健康调查",
   "source_file": "项目简介：河流健康调查.pdf",
   "scoring_section": "评估标准（过程评估 30% + 产品评估 70%）",
-  "annotator": "人工基线（评测标注）",
+  "annotator": "AI 预标（待人工独立重标）",
   "annotated_at": "2026-09-13",
   "points": [
     {"order": 1, "weight": 10, "decomposable": true,  "label": "研究质量"},
