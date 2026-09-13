@@ -32,9 +32,9 @@ from src.intelligence.extract import (
 )
 from src.intelligence.llm import LLMClient, LLMError
 from src.intelligence.parse import parse_assignment
-from src.models import Roster
+from src.models import AssignmentRecord, Preference, Roster
 from src.report.checklist import render_checklist
-from src.storage import JsonStore
+from src.storage import PREFERENCES, PROPOSALS, JsonStore
 
 __all__ = ["Gateway", "main"]
 
@@ -62,9 +62,17 @@ class Gateway:
 
     def handle(self, inbound: Inbound) -> Outcome:
         """快路径：路由 → 回话 → 落盘 → 需要时起后台重活。"""
+        self._remember_group(inbound)
         state = self.store.load_state()
         has_rubric = bool(self.store.load_rubric())
-        outcome = route(inbound, state, self.store.load_members(), has_rubric=has_rubric)
+        outcome = route(
+            inbound,
+            state,
+            self.store.load_members(),
+            has_rubric=has_rubric,
+            cards=self.store.load_cards(),
+            preferences=self.store.load_preferences(),
+        )
         self._deliver(outcome)
 
         # 重活起不起，route() 已经判过（Outcome.pipeline）—— 这里不再自己判一遍，
@@ -77,11 +85,66 @@ class Gateway:
 
     def _deliver(self, outcome: Outcome) -> None:
         for message in outcome.replies:
-            self.sender.send(message)
+            try:
+                self.sender.send(message)
+            except Exception as exc:
+                # 一条发失败不能吃掉后面几条：M4 开窗口要连发"清单发群 + 每人私聊"，
+                # 某个人的私聊发不出去，群里的清单必须照发（方案 §7：不能静默失败）。
+                print(
+                    f"[M0] 发消息失败（已跳过）：{type(exc).__name__}: {exc}", file=sys.stderr
+                )
         if outcome.state is not None:
             self.store.save_state(outcome.state)
         if outcome.save_roster is not None:
             self.store.save_members(Roster.from_dict(outcome.save_roster))
+        if outcome.save_preference is not None:
+            self._save_preference(outcome.save_preference)
+        if outcome.save_assignments:
+            self._save_assignments(outcome.save_assignments)
+        if outcome.save_proposal is not None:
+            self._save_proposal(outcome.save_proposal)
+
+    # ---------- M4 / M5 的落盘 ----------
+
+    def _remember_group(self, inbound: Inbound) -> None:
+        """任何群消息都刷新 ``state.group_chat_id``（D-54）。
+
+        M4 的清单 / 总表、M5 的匿名转达都要**主动发到群**，而 router 是纯函数、不读
+        文件 —— 所以"群是哪个"由 app 层记进 state。机器人自己的消息不算：那是回声，
+        不是"群里有人在活动"。
+        """
+        if inbound.sender_type == "app" or inbound.chat_type != "group" or not inbound.chat_id:
+            return
+        state = self.store.load_state()
+        if state.get("group_chat_id") == inbound.chat_id:
+            return
+        state["group_chat_id"] = inbound.chat_id
+        self.store.save_state(state)
+
+    def _save_preference(self, payload: dict) -> None:
+        """按 ``user_id`` **覆盖**写志愿（后投覆盖先投，D-33 / §6.3）。
+
+        走 ``mutate_many``：它是"类型化列表的原子读-改-写"，正是为 M4 收志愿准备的
+        原语 —— 两个组员同时私聊回复时不会丢更新。
+        """
+        preference = Preference.from_dict(payload)
+        self.store.mutate_many(
+            PREFERENCES,
+            Preference,
+            lambda items: [p for p in items if p.user_id != preference.user_id] + [preference],
+        )
+
+    def _save_assignments(self, payloads) -> None:
+        """整份分配结果一次性覆盖（M4 结算，§6.4）。"""
+        self.store.save_assignments([AssignmentRecord.from_dict(p) for p in payloads])
+
+    def _save_proposal(self, payload: dict) -> None:
+        """追加一条提议 —— **含真实 ``user_id``**，这是防滥用留痕（§6.5）。
+
+        ``proposals.json`` 的字段级定义在 requirements 里没有（§6.5 只规定了语义），
+        所以走裸 JSON 的原子读-改-写，不硬造数据类。
+        """
+        self.store.mutate_raw(PROPOSALS, lambda items: [*(items or []), payload], default=[])
 
     # ---------- 慢路径：M1 / M3 ----------
 

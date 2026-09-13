@@ -9,7 +9,7 @@ from src.gateway import replies
 from src.gateway.events import Inbound, Mention
 from src.intelligence.extract import ExtractError
 from src.intelligence.llm import LLMError
-from src.models import AssignmentMeta, RubricPoint, TaskCard
+from src.models import AssignmentMeta, Member, Roster, RubricPoint, TaskCard
 from src.storage import JsonStore
 
 DOC = "作业书：1 实现词法分析器 40 分。2 撰写实验报告 60 分。"
@@ -418,3 +418,161 @@ def test_register_collect_routes_through_mentions(env):
     gateway.handle(_inbound(form, mentions=mentions))
     assert store.load_state()["register"]["stage"] == "confirm"
     assert "共 3 人" in sender.texts[-1]
+
+
+# ---------- M4 志愿分配（§2.1~§2.4 / D-52~D-54）----------
+
+
+def _seed_m4(store):
+    """三张卡 + 三个人（组长 = ou_user，就是默认的发送者）。"""
+    store.save_cards(
+        [
+            TaskCard(
+                task_id=f"T{index}",
+                module_name=f"模块{index}",
+                rubric_refs=["R1"],
+                effort_hours=1.0,
+                deliverable="交付物",
+                acceptance="验收标准",
+            )
+            for index in (1, 2, 3)
+        ]
+    )
+    store.save_members(
+        Roster(
+            leader="ou_user",
+            members=[
+                Member(open_id=open_id, name=name)
+                for open_id, name in (("ou_user", "张三"), ("ou_b", "李四"), ("ou_c", "王五"))
+            ],
+            registered_at="2026-09-13T09:00:00",
+            confirmed_by="ou_user",
+        )
+    )
+
+
+def _dm(text, sender):
+    return _inbound(text, chat_type="p2p", chat_id=sender, sender_open_id=sender)
+
+
+def test_m4_group_command_opens_the_window_and_dms_everyone(env):
+    gateway, store, sender, _ = env
+    _seed_m4(store)
+
+    gateway.handle(_inbound("你想做哪一块"))
+
+    state = store.load_state()
+    assert state["awaiting"] == "preference"
+    assert state["group_chat_id"] == "c1"
+    assert sender.sent[0].chat_id == "c1"                     # 清单发群
+    assert [m.receive_id_type for m in sender.sent[1:]] == ["open_id"] * 3
+    assert [m.chat_id for m in sender.sent[1:]] == ["ou_user", "ou_b", "ou_c"]
+
+
+def test_m4_collects_preferences_and_settles_into_assignments(env):
+    gateway, store, sender, _ = env
+    _seed_m4(store)
+    gateway.handle(_inbound("你想做哪一块"))
+
+    gateway.handle(_dm("1", "ou_b"))
+    gateway.handle(_dm("1 2", "ou_c"))
+
+    assert [p.user_id for p in store.load_preferences()] == ["ou_b", "ou_c"]
+    assert store.load_preferences()[1].ranked_task_ids == ["T1", "T2"]
+
+    sender.sent.clear()
+    gateway.handle(_inbound("你想做哪一块"))                   # 组长重发 = 封盘
+
+    assert store.load_state()["awaiting"] is None
+    assert {a.task_id: (a.assignee, a.source) for a in store.load_assignments()} == {
+        "T1": ("ou_b", "volunteer_1"),
+        "T2": ("ou_c", "volunteer_2"),
+        "T3": ("ou_user", "auto"),
+    }
+    assert sender.sent[0].chat_id == "c1"
+    assert "分配总表" in sender.texts[0]
+    assert "第一志愿 1 人 / 第二志愿 1 人 / 兜底 1 人" in sender.texts[0]
+
+
+def test_m4_resubmission_overwrites_the_earlier_preference(env):
+    gateway, store, _, _ = env
+    _seed_m4(store)
+    gateway.handle(_inbound("你想做哪一块"))
+
+    gateway.handle(_dm("1", "ou_b"))
+    first = store.load_preferences()[0].submitted_at
+    gateway.handle(_dm("2 3", "ou_b"))
+
+    stored = store.load_preferences()
+    assert len(stored) == 1                                   # 后投覆盖先投，不是追加
+    assert stored[0].ranked_task_ids == ["T2", "T3"]
+    assert stored[0].submitted_at >= first
+
+
+def test_m4_group_digits_during_the_window_are_ignored(env):
+    """D-54 的现场：窗口开着的时候在群里打数字，不该被记成志愿。"""
+    gateway, store, sender, _ = env
+    _seed_m4(store)
+    gateway.handle(_inbound("你想做哪一块"))
+
+    sender.sent.clear()
+    gateway.handle(_inbound("3"))
+
+    assert store.load_preferences() == []
+    assert sender.texts == [replies.COMMAND_LIST_TEXT]
+
+
+# ---------- M5 匿名代言（§6.5 / D-55）----------
+
+
+def test_m5_proposal_is_relayed_anonymously_and_leaves_a_trace(env):
+    gateway, store, sender, _ = env
+    gateway.handle(_inbound("随便说句话"))                     # 先让机器人认下"群"
+    sender.sent.clear()
+
+    gateway.handle(_dm("我想提议：前端用 React", "ou_b"))
+
+    assert sender.sent[0].chat_id == "c1"                     # 转达到群
+    assert sender.sent[0].text == "有组员提议：前端用 React"
+    assert "ou_b" not in sender.sent[0].text
+    assert "李四" not in sender.sent[0].text
+    assert sender.sent[1].chat_id == "ou_b"                   # 私聊确认
+    assert sender.texts[1] == replies.PROPOSAL_ACK
+
+    proposals = store.load_proposals()
+    assert proposals[0]["user_id"] == "ou_b"                  # 留痕真实身份
+    assert proposals[0]["text"] == "前端用 React"
+
+
+def test_m5_without_a_known_group_does_not_pretend_to_post(env):
+    gateway, store, sender, _ = env
+    gateway.handle(_dm("我想提议：加图表", "ou_b"))
+    assert sender.texts == [replies.NEED_GROUP]
+    assert store.load_proposals() == []
+
+
+def test_group_id_is_remembered_from_any_group_message(env):
+    gateway, store, _, _ = env
+    gateway.handle(_inbound("随便说句话"))
+    assert store.load_state()["group_chat_id"] == "c1"
+
+    gateway.handle(_dm("你好", "ou_b"))
+    assert store.load_state()["group_chat_id"] == "c1"        # 私聊不会把它改掉
+
+
+def test_a_failed_direct_message_does_not_eat_the_group_reply(env):
+    """一条发失败不能吃掉后面几条：M4 要连发"清单发群 + 每人私聊"。"""
+    gateway, store, _, _ = env
+    _seed_m4(store)
+
+    class _SelectiveSender(FakeSender):
+        def send(self, message):
+            if message.receive_id_type == "open_id":
+                raise RuntimeError("私聊发不出去")
+            return super().send(message)
+
+    gateway.sender = _SelectiveSender()
+    gateway.handle(_inbound("你想做哪一块"))
+
+    assert "任务卡清单" in gateway.sender.texts[0]             # 群里的清单照发
+    assert store.load_state()["awaiting"] == "preference"

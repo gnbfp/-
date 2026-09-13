@@ -56,10 +56,15 @@ class Inbound:
 
 @dataclass(frozen=True)
 class Reply:
-    """一条要发出去的纯文本消息。"""
+    """一条要发出去的纯文本消息。
+
+    ``receive_id_type``：M0 只回"来的那个会话"（``chat_id``）；M4/M5 要**主动发到群**
+    （chat_id）或**私聊某个人**（open_id），所以这一条得能表达"发给谁"（D-54 / D-55）。
+    """
 
     chat_id: str
     text: str
+    receive_id_type: str = "chat_id"        # "chat_id" | "open_id"
 
 
 @dataclass(frozen=True)
@@ -77,6 +82,11 @@ class Outcome:
     ``pipeline``：非空 = app 层要起后台重活（``"assignment"`` / ``"decompose"``）。
       由 ``route()`` 一次算出，app 层只读不判 —— 否则「回什么话」与「起不起重活」
       会各判一遍，给出互相矛盾的结果（外审必修 4：状态窗口吃掉指令却照样烧 LLM）。
+
+    下面三个是 M4 / M5 的落盘请求（都只是**数据**，写盘归 app 层），形状照 ``save_roster``：
+      * ``save_preference``：一条志愿（按 ``user_id`` 覆盖写，M4 收志愿）；
+      * ``save_assignments``：整份分配结果（M4 结算，一次性覆盖）；
+      * ``save_proposal``：一条匿名提议（M5，追加写，含真实 ``user_id`` 留痕）。
     """
 
     replies: tuple[Reply, ...] = ()
@@ -84,6 +94,9 @@ class Outcome:
     download_file_key: str = ""
     save_roster: dict | None = None
     pipeline: str = ""
+    save_preference: dict | None = None
+    save_assignments: tuple[dict, ...] = ()
+    save_proposal: dict | None = None
 
 
 def reply(inbound: Inbound, text: str) -> Reply:
