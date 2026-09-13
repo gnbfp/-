@@ -118,11 +118,18 @@ def to_inbound(data) -> Inbound:
     if field_name:
         file_key = str(payload.get(field_name) or "")
 
+    text = str(payload.get("text") or "")
+    if message_type == "post":
+        # P1-I：post（富文本 / 转发）没有顶层 text，得把 title + content 拍平；
+        # 归一成 text，让 router 照常走前缀 / 志愿解析 —— 否则整条消息被静默丢弃。
+        text = _post_text(payload)
+        message_type = "text"
+
     return Inbound(
         chat_id=getattr(message, "chat_id", "") or "",
         chat_type=getattr(message, "chat_type", "") or "",
         message_type=message_type,
-        text=str(payload.get("text") or ""),
+        text=text,
         mentions=tuple(
             Mention(
                 key=getattr(mention, "key", "") or "",
@@ -137,6 +144,31 @@ def to_inbound(data) -> Inbound:
         file_key=file_key,
         file_name=str(payload.get("file_name") or ""),
     )
+
+
+def _post_text(payload: dict) -> str:
+    """把 post（富文本 / 转发）拍平成纯文本（P1-I）。
+
+    post 的 content 是「段落 × 元素」两层数组：把每段的 `text` 元素拼起来、
+    段间换行，标题非空时放最前面。不认识的 tag（图片 / 链接 / @）没有 text 就跳过。
+    """
+    parts: list[str] = []
+    title = str(payload.get("title") or "").strip()
+    if title:
+        parts.append(title)
+    content = payload.get("content")
+    if isinstance(content, list):
+        for paragraph in content:
+            if not isinstance(paragraph, list):
+                continue
+            parts.append(
+                "".join(
+                    str(node.get("text") or "")
+                    for node in paragraph
+                    if isinstance(node, dict)
+                )
+            )
+    return "\n".join(parts)
 
 
 def _parse_content(raw) -> dict:

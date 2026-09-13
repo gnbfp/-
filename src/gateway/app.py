@@ -12,9 +12,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import socket
 import sys
 import threading
+from datetime import datetime
+from pathlib import Path
 
 from src.config import ConfigError, load_config
 from src.gateway import replies
@@ -40,6 +44,74 @@ __all__ = ["Gateway", "main"]
 
 # data/seen.json 只留最近这么多条 message_id（P0-A）。
 _SEEN_LIMIT = 200
+
+# 单实例保护的守护端口（P0-E）：第二个进程 bind 不上就拒绝启动。
+INSTANCE_PORT = 47653
+LOCK_FILE = "app.lock"
+
+
+def _stamp() -> str:
+    """日志时间戳（P1-J）：明天复盘要靠它把两个进程的行对齐。"""
+    return datetime.now().isoformat(timespec="seconds")
+
+
+class SingleInstance:
+    """单实例保护（P0-E）—— 机器上只允许跑一个网关。
+
+    真机故障：同时跑了两个 `python -m src.gateway.app`，同一套凭据 → 两条
+    WebSocket → 每条群消息被两个进程各处理一次（重复回话、落盘互相覆盖）。
+    `message_id` 去重（P0-A）对两个进程只能偶尔挡住（各读各的 seen.json，有竞态），
+    所以要在**进程级**互斥。
+
+    Windows 上按 pid 判存活不安全（`os.kill(pid, 0)` 会真的把进程杀掉），所以
+    守卫用 **bind 127.0.0.1:<port>** —— bind 是原子的，第二个实例必然失败。
+    `data/app.lock` 只写来给人看（pid / started_at），**不参与判定**：硬退
+    （`os._exit`）留下的残留锁文件不会挡住下一次启动。
+    """
+
+    def __init__(self, data_dir, port: int = INSTANCE_PORT) -> None:
+        self.path = Path(data_dir) / LOCK_FILE
+        self.port = port
+        self._sock: socket.socket | None = None
+
+    def acquire(self) -> bool:
+        """``True`` = 抢到；``False`` = 已有实例在跑，别启动。"""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.bind(("127.0.0.1", self.port))
+        except OSError:
+            sock.close()
+            return False
+        self._sock = sock
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(
+            json.dumps(
+                {"pid": os.getpid(), "started_at": _stamp(), "port": self.port},
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return True
+
+    def release(self) -> None:
+        """正常退出：放掉端口 + 删锁。"""
+        if self._sock is not None:
+            try:
+                self._sock.close()
+            finally:
+                self._sock = None
+        try:
+            self.path.unlink()
+        except FileNotFoundError:
+            pass
+
+    def describe(self) -> str:
+        """把现有锁文件读成人话，给拒绝启动时的那行错误用。"""
+        try:
+            return self.path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return ""
 
 
 class Gateway:
@@ -73,13 +145,13 @@ class Gateway:
         每条消息先打一行日志（P1-G）：真机出问题时先看这一行，否则永远是黑盒。
         """
         print(
-            f"[M0] recv id={inbound.message_id} chat={inbound.chat_id} "
+            f"[M0] {_stamp()} recv id={inbound.message_id} chat={inbound.chat_id} "
             f"from={inbound.sender_open_id} type={inbound.message_type} "
             f"text={inbound.text[:40]}"
         )
         if self._is_duplicate(inbound.message_id):
             # 去重命中也要留痕，否则看不出到底有没有重复投递（P1-G / P0-A）
-            print(f"[M0] dup 跳过 id={inbound.message_id}")
+            print(f"[M0] {_stamp()} dup 跳过 id={inbound.message_id}")
             return Outcome()
         self._remember_group(inbound)
         state = self.store.load_state()
@@ -121,19 +193,30 @@ class Gateway:
         )
         return False
 
+    def _send(self, message: Reply):
+        """发一条并打一行轨迹（P1-J）。返回 ``None`` = 成功，否则返回异常。"""
+        try:
+            self.sender.send(message)
+        except Exception as exc:
+            print(
+                f"[M0] {_stamp()} -> {message.receive_id_type}:{message.chat_id} "
+                f"失败({type(exc).__name__}) | {message.text[:40]}"
+            )
+            return exc
+        print(
+            f"[M0] {_stamp()} -> {message.receive_id_type}:{message.chat_id} "
+            f"ok | {message.text[:40]}"
+        )
+        return None
+
     def _deliver(self, outcome: Outcome) -> tuple[Reply, ...]:
-        """发出所有回复，返回**发失败的**那些（P0-C）。"""
+        """发出所有回复，返回**发失败的**那些（P0-C）。每条都打一行轨迹（P1-J）。"""
         failed: list[Reply] = []
         for message in outcome.replies:
-            try:
-                self.sender.send(message)
-            except Exception as exc:
-                # 一条发失败不能吃掉后面几条：M4 开窗口要连发"清单发群 + 每人私聊"，
-                # 某个人的私聊发不出去，群里的清单必须照发（方案 §7：不能静默失败）。
+            # 一条发失败不能吃掉后面几条：M4 开窗口要连发"清单发群 + 每人私聊"，
+            # 某个人的私聊发不出去，群里的清单必须照发（方案 §7：不能静默失败）。
+            if self._send(message) is not None:
                 failed.append(message)
-                print(
-                    f"[M0] 发消息失败（已跳过）：{type(exc).__name__}: {exc}", file=sys.stderr
-                )
         if outcome.state is not None:
             self.store.save_state(outcome.state)
         if outcome.save_roster is not None:
@@ -152,17 +235,12 @@ class Gateway:
         group = (state or {}).get("group_chat_id") or ""
         if not dm_failed or not group:
             return
-        try:
-            self.sender.send(
-                Reply(
-                    chat_id=group,
-                    text=replies.PREFERENCE_DM_FAILED.format(count=len(dm_failed)),
-                )
+        self._send(
+            Reply(
+                chat_id=group,
+                text=replies.PREFERENCE_DM_FAILED.format(count=len(dm_failed)),
             )
-        except Exception as exc:
-            print(
-                f"[M0] 补发失败提示也失败了：{type(exc).__name__}: {exc}", file=sys.stderr
-            )
+        )
 
     # ---------- M4 / M5 的落盘 ----------
 
@@ -318,24 +396,45 @@ def main(argv=None) -> int:
 
     store = JsonStore(config.data_dir)
     store.ensure_dirs()
-    client_kwargs = {}
-    if args.quiet:
-        import lark_oapi as lark
 
-        client_kwargs["log_level"] = lark.LogLevel.WARNING
-    client = FeishuClient(config, **client_kwargs)
-    gateway = Gateway(config, store, sender=client, downloader=client)
-
-    print("[M0] 正在建立长连接（首次加载 SDK 约 20 秒，属正常）", file=sys.stderr)
-    print("     测试群里 @机器人 发「拆解」即可开始；Ctrl+C 退出", file=sys.stderr)
-    if args.seconds > 0:
-        threading.Timer(args.seconds, lambda: os._exit(0)).start()
+    # P0-E：单实例保护。真机故障是两个进程跑同一套凭据 → 每条消息被处理两次。
+    guard = SingleInstance(store.root)
+    if not guard.acquire():
+        print("[M0] 启动被拒：已有一个网关实例在跑（单实例保护，P0-E）。", file=sys.stderr)
+        existing = guard.describe()
+        if existing:
+            print(f"     现有 app.lock：{existing}", file=sys.stderr)
+        print(
+            "     同一套凭据跑两个进程 = 每条群消息被处理两次。请先关掉另一个窗口。",
+            file=sys.stderr,
+        )
+        return 3
 
     try:
-        client.start(gateway.on_event)
-    except KeyboardInterrupt:
-        pass
-    return 0
+        client_kwargs = {}
+        if args.quiet:
+            import lark_oapi as lark
+
+            client_kwargs["log_level"] = lark.LogLevel.WARNING
+        client = FeishuClient(config, **client_kwargs)
+        gateway = Gateway(config, store, sender=client, downloader=client)
+
+        print("[M0] 正在建立长连接（首次加载 SDK 约 20 秒，属正常）", file=sys.stderr)
+        print("     测试群里 @机器人 发「拆解」即可开始；Ctrl+C 退出", file=sys.stderr)
+        if args.seconds > 0:
+            def _stop() -> None:
+                guard.release()
+                os._exit(0)
+
+            threading.Timer(args.seconds, _stop).start()
+
+        try:
+            client.start(gateway.on_event)
+        except KeyboardInterrupt:
+            pass
+        return 0
+    finally:
+        guard.release()
 
 
 if __name__ == "__main__":

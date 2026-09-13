@@ -1,6 +1,9 @@
 """M0 组装层单测：依赖注入 FakeSender / FakeDownloader / FakeLLM（方案 §9）。"""
 
 import itertools
+import json
+import os
+import socket
 from datetime import datetime
 
 import pytest
@@ -681,5 +684,42 @@ def test_every_message_is_logged_and_duplicates_are_marked(env, capsys):
     gateway.handle(inbound)
 
     out = capsys.readouterr().out
-    assert f"[M0] recv id={inbound.message_id}" in out
-    assert "[M0] dup 跳过" in out
+    assert f"recv id={inbound.message_id}" in out
+    assert "dup 跳过" in out
+
+
+def test_reply_trace_is_logged_with_a_timestamp(env, capsys):
+    """P1-J：每条发出去的回复都留一行带时间戳的轨迹。"""
+    gateway, store, sender, _ = env
+
+    gateway.handle(_inbound("随便说句话"))
+
+    out = capsys.readouterr().out
+    assert " -> chat_id:c1 ok | " in out
+    assert "recv id=" in out
+
+
+def _free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def test_single_instance_guard_blocks_a_second_copy(tmp_path):
+    """P0-E：机器上只能跑一个网关，第二个进程直接启动失败。"""
+    port = _free_port()
+    first = app_module.SingleInstance(tmp_path, port=port)
+    assert first.acquire() is True
+
+    lock = json.loads((tmp_path / "app.lock").read_text(encoding="utf-8"))
+    assert lock["pid"] == os.getpid()
+
+    second = app_module.SingleInstance(tmp_path, port=port)
+    assert second.acquire() is False                 # 第二个实例被挡住
+
+    first.release()
+    assert not (tmp_path / "app.lock").exists()      # 正常退出删锁
+
+    third = app_module.SingleInstance(tmp_path, port=port)
+    assert third.acquire() is True                   # 退出后可以再起
+    third.release()
