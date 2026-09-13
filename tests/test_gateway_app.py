@@ -670,3 +670,16 @@ def test_task_list_names_the_source_assignment(env):
     gateway.handle(_inbound("你想做哪一块"))
 
     assert sender.texts[0].startswith("当前任务卡来自《课程任务书》（3 张）")
+
+
+def test_every_message_is_logged_and_duplicates_are_marked(env, capsys):
+    """P1-G：每条消息都有一行日志；去重命中也要留痕。"""
+    gateway, store, sender, _ = env
+    inbound = _inbound("随便说句话")
+
+    gateway.handle(inbound)
+    gateway.handle(inbound)
+
+    out = capsys.readouterr().out
+    assert f"[M0] recv id={inbound.message_id}" in out
+    assert "[M0] dup 跳过" in out

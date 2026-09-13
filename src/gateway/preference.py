@@ -137,6 +137,9 @@ def open_window(
     block = {
         "opened_at": _iso(now or datetime.now()),
         "opened_by": inbound.sender_open_id,
+        # 记下开窗的那个群（P1-H）：state.group_chat_id 是"最后见到的群消息"
+        # 刷新的，窗口开着时别的群来一条消息就会把总表发错群。
+        "chat_id": group,
     }
     text = allocation.render_task_list(cards, source_title=source_title)
     out = [Reply(chat_id=group, text=text)]
@@ -227,7 +230,9 @@ def settle(
     """结算：分配 + 总表发群 + 关窗口。**结不了就返回 ``None``**，绝不让总表无声消失。"""
     cards = list(cards or ())
     members = list(getattr(roster, "members", None) or ())
-    group = (state or {}).get("group_chat_id") or ""
+    block = dict((state or {}).get("preference") or {})
+    # 优先发回**开窗的那个群**（P1-H）；老 state 没记就退回 group_chat_id。
+    group = block.get("chat_id") or (state or {}).get("group_chat_id") or ""
     if not cards or not members or not group:
         return None
     assignments = allocation.allocate(cards, roster, preferences)

@@ -69,8 +69,17 @@ class Gateway:
         第一件事是**按 message_id 去重**（P0-A）：飞书会重复投递 / 重连补投同一个
         事件，不去重就会把同一条指令完整跑两遍（新群"先清单、再总表"就是这么来的）。
         重复事件直接丢掉：不发消息、不写业务数据。
+
+        每条消息先打一行日志（P1-G）：真机出问题时先看这一行，否则永远是黑盒。
         """
+        print(
+            f"[M0] recv id={inbound.message_id} chat={inbound.chat_id} "
+            f"from={inbound.sender_open_id} type={inbound.message_type} "
+            f"text={inbound.text[:40]}"
+        )
         if self._is_duplicate(inbound.message_id):
+            # 去重命中也要留痕，否则看不出到底有没有重复投递（P1-G / P0-A）
+            print(f"[M0] dup 跳过 id={inbound.message_id}")
             return Outcome()
         self._remember_group(inbound)
         state = self.store.load_state()

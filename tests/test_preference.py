@@ -64,6 +64,7 @@ def _state(opened_at=OPEN, group=GROUP, awaiting="preference"):
         "preference": {
             "opened_at": opened_at.isoformat(timespec="seconds"),
             "opened_by": "ou_zhang",
+            "chat_id": group,
         },
         "group_chat_id": group,
     }
@@ -383,3 +384,18 @@ def test_m4_and_m5_paths_never_carry_a_pipeline():
         route(_private("我想提议：x"), _state(), _roster(), now=OPEN),
     ]
     assert all(outcome.pipeline == "" for outcome in cases)
+
+
+def test_settles_into_the_group_that_opened_the_window():
+    """P1-H：总表发回**开窗的那个群**，不受"最后见到的群消息"影响。"""
+    state = _state()
+    state["group_chat_id"] = "c_other"           # 窗口开着时另一个群来了消息
+    outcome = route(
+        _inbound("封盘"),
+        state,
+        _roster(),
+        cards=_cards(),
+        preferences=[Preference("ou_li", ["T1"], "2026-09-13T09:01:00")],
+        now=OPEN,
+    )
+    assert outcome.replies[0].chat_id == GROUP   # 不是 c_other
