@@ -7,7 +7,7 @@
 本模块**不调 LLM、不落盘、不判定**，只读 ``eval/baseline/*.json`` 与
 ``eval/runs/<doc_id>/*.json`` 算数并渲染。
 
-口径（``m8_eval_design.md`` §4）：
+口径（D-51）：
   * 分母 = **人工基线**里 ``decomposable=true`` 的点（**不看 agent 的 status**）；
   * 分子 = 被任一卡片 ``rubric_refs`` 引用、且在人工分母里的点；
   * 均衡度 = ``1 - (max-min)/sum``（不筛 rubric_refs）；``sum=0`` → ``N/A``；
@@ -210,7 +210,7 @@ def render(results: Sequence[DocResult], generated_at: str) -> str:
     lines += [
         "",
         f"逐份判据（每份 ≥ {PASS_THRESHOLD:.0%} 且无 ⚠️）：**{passed}/{total} 通过** → D5 门③ {gate}",
-        f"平均覆盖率：{average:.0%}｜循环口径与评测口径的分母差异见 `m8_eval_design.md` §4.1",
+        f"平均覆盖率：{average:.0%}｜循环口径与评测口径的分母差异见 `eval/report.py` 顶部 docstring",
         "",
         "## 明细",
         "",
