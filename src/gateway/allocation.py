@@ -9,7 +9,9 @@
      依次分给"当前手上卡数最少的人"（并列按花名册顺序）—— 没填志愿的人因此拿到 ``auto``。
 
 ``source`` 的合法取值只有 ``volunteer_1`` / ``volunteer_2`` / ``auto`` / ``leader``（§6.4），
-所以志愿里第 3 个及以后的命中一律记 ``auto`` —— 卡仍是他自己选的，只是标签退化成兜底。
+枚举里没有 ``volunteer_3``，所以志愿里**第 2 个及以后**的命中一律记 ``volunteer_2``；
+``auto`` **严格只留给"没填志愿的人"**（D-53 修订）—— 这样总表末行"几人被兜底"
+才等于"几人没填表"。
 ``depends_on`` **不参与分配**（只影响甘特图，§2.4 ③）；一张卡只能有一个 ``assignee``。
 """
 
@@ -58,7 +60,7 @@ def allocate(
         chosen[task_id] = AssignmentRecord(
             task_id=task_id,
             assignee=preference.user_id,
-            source="volunteer_1" if rank == 1 else ("volunteer_2" if rank == 2 else "auto"),
+            source="volunteer_1" if rank == 1 else "volunteer_2",
             completed_at=None,
         )
 

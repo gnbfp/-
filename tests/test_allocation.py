@@ -93,8 +93,8 @@ def test_every_card_is_handed_out_exactly_once_in_card_order():
     assert sorted(r.task_id for r in result) == ["T1", "T2", "T3"]
 
 
-def test_third_choice_and_beyond_is_labeled_auto():
-    """source 枚举里只有 volunteer_1/volunteer_2，第 3 个及以后按兜底记账。"""
+def test_third_choice_is_labeled_volunteer_2_not_auto():
+    """志愿里第 2 个及以后的命中都记 volunteer_2；auto 只留给"没填志愿的人"（D-53 修订）。"""
     cards = [_card("T1"), _card("T2"), _card("T3")]
     result = allocate(
         cards,
@@ -106,7 +106,20 @@ def test_third_choice_and_beyond_is_labeled_auto():
         ],
     )
     by_task = {r.task_id: r for r in result}
-    assert (by_task["T3"].assignee, by_task["T3"].source) == ("ou_b", "auto")
+    assert (by_task["T3"].assignee, by_task["T3"].source) == ("ou_b", "volunteer_2")
+
+
+def test_only_whoever_did_not_submit_is_labeled_auto():
+    """对照组：一个字没填的人，兜底拿到的卡才是 auto。"""
+    cards = [_card("T1"), _card("T2")]
+    result = allocate(
+        cards,
+        _roster(2),
+        [_want("ou_a", ["T1"], "2026-09-13T10:00:00")],
+    )
+    by_task = {r.task_id: r for r in result}
+    assert (by_task["T1"].assignee, by_task["T1"].source) == ("ou_a", "volunteer_1")
+    assert (by_task["T2"].assignee, by_task["T2"].source) == ("ou_b", "auto")
 
 
 def test_preferences_from_outside_the_roster_are_ignored():
