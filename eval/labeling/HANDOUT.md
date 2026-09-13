@@ -103,7 +103,7 @@ C:\Users\617\Desktop\M8标注\
   "title": "BIM 技术原理及其应用课程设计",
   "source_file": "BIM 技术原理及其应用课程设.pdf",
   "scoring_section": "第二节 成绩评定",
-  "annotator": "张三",
+  "annotator": "成员A",
   "annotated_at": "2026-09-13",
   "points": [
     {"order": 1, "weight": 20, "decomposable": true,  "label": "报告结构"},
@@ -113,7 +113,7 @@ C:\Users\617\Desktop\M8标注\
 ```
 
 - `scoring_section` —— 写你抄的是哪一节（原文小节标题）
-- `annotator` —— 写你的**真名**；`annotated_at` —— 写今天
+- `annotator` —— 写你的**代号**（例如 `成员A`）；不要写真名，本仓库是公开的；`annotated_at` —— 写今天
 - **最后一行结尾不能有逗号**
 
 **JSON 最容易犯的 4 个错：**

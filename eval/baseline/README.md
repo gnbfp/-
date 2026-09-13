@@ -4,11 +4,11 @@
 
 > **状态：待独立重标（现有 5 份为 AI 预标，不作数）。**
 > 重标协议（2026-09-13 定）：
-> ① 标注人 = ＿＿＿（真名）
+> ① 标注人代号 = ＿＿＿（真名不入公开仓库）
 > ② **全程不打开本仓库任何文件、不看机器人任何输出**（含群里发过的核对清单）
 > ③ 只在 `C:\Users\617\Desktop\M8标注\` 里对着原文填空壳
 > ④ **交回之后**才允许跑 `python -m eval.evaluate --no-rerun`
-> 重标完成的标志：5 个 json 的 `annotator` 是真名、`points` 非空、`annotated_at` 是重标当天。
+> 重标完成的标志：5 个 json 的 `annotator` 是**代号**（非空、且不为 `AI 预标`）、`points` 非空、`annotated_at` 是重标当天。
 > 发给标注人的手册与空壳在 `../labeling/`（`HANDOUT.md` + `template/`）。
 
 复算脚本见 `../report.py` / `../evaluate.py`。
