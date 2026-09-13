@@ -1,9 +1,9 @@
 {
   "doc_id": "marketing",
-  "title": "营销方案计划",
+  "title": "营销方案计划任务书",
   "source_file": "营销方案计划》任务书.pdf",
-  "scoring_section": "附件1 三、评分标准",
-  "annotator": "AI 预标（待人工独立重标）",
+  "scoring_section": "三评分标准",
+  "annotator": "左",
   "annotated_at": "2026-09-13",
   "points": [
     {"order": 1, "weight": 5,  "decomposable": true, "label": "写作水平与格式"},

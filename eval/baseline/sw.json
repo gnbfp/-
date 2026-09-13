@@ -1,15 +1,15 @@
 {
   "doc_id": "sw",
-  "title": "软件系统设计与开发实践",
+  "title": "软件系统设计与开发实践课程任务书",
   "source_file": "软件系统设计与开发实践》课程任 1.pdf",
-  "scoring_section": "八、课程评分标准",
-  "annotator": "AI 预标（待人工独立重标）",
+  "scoring_section": "八课程评分标准",
+  "annotator": "左",
   "annotated_at": "2026-09-13",
   "points": [
     {"order": 1, "weight": 10, "decomposable": false, "label": "学习态度遵守纪律"},
-    {"order": 2, "weight": 30, "decomposable": true,  "label": "系统方案设计"},
+    {"order": 2, "weight": 30, "decomposable": true,  "label": "系统方案设计情况"},
     {"order": 3, "weight": 30, "decomposable": true,  "label": "系统实现情况"},
-    {"order": 4, "weight": 20, "decomposable": true,  "label": "报告文档质量"},
+    {"order": 4, "weight": 20, "decomposable": true,  "label": "报告文档质量规范"},
     {"order": 5, "weight": 10, "decomposable": true,  "label": "提交及验收情况"}
   ]
 }
