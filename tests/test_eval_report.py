@@ -1,4 +1,4 @@
-"""M8 复算脚本的单测（`m8_eval_design.md` §7）。
+"""M8 复算脚本的单测（口径见 `eval/report.py` 顶部 docstring）。
 
 **离线**：不调 LLM、不需要真作业书、不碰 `data/`。
 
