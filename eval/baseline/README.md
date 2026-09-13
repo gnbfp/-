@@ -1,6 +1,10 @@
 # eval/baseline —— M8 人工基线
 
 这五份 JSON 是**人工标注**的评分点基线，是 D5 门③ 覆盖率与均衡度的**分母**。
+
+> ⚠️ **当前状态：这五份是 AI 预标，不是独立人工标注**（`annotator` 为占位值、`decomposable` 与 agent 的 `status` 高度一致）。
+> 待「报告与评测」owner 独立重标后才生效；**重标前 D5 门③ 不算通过**（见 `requirements.md` D-51）。
+
 复算脚本见 `../report.py` / `../evaluate.py`；设计稿见 `m8_eval_design.md` §3。
 
 ## 规矩（照 §3 抄）

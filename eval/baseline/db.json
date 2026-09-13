@@ -3,7 +3,7 @@
   "title": "数据库课程设计任务书",
   "source_file": "数据库课程设计任务书.pdf",
   "scoring_section": "五、3 成绩评定",
-  "annotator": "人工基线（评测标注）",
+  "annotator": "AI 预标（待人工独立重标）",
   "annotated_at": "2026-09-13",
   "points": [
     {"order": 1, "weight": 40, "decomposable": false, "label": "平时出勤与笔记"},
