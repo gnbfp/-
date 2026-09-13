@@ -3,7 +3,7 @@
 import pytest
 
 from src.intelligence.llm import LLMOutputError
-from src.intelligence.parse import _validate_points, parse_assignment
+from src.intelligence.parse import M1_SYSTEM, _validate_points, parse_assignment
 
 TEXT = """编译原理课程设计作业书
 
@@ -128,3 +128,10 @@ def test_source_file_comes_from_caller_not_the_llm():
     payload["assignment"]["source_file"] = "LLM 猜的标题"
     result = parse_assignment(TEXT, FakeClient([payload]), source_file="作业书.pdf")
     assert result.meta.source_file == "作业书.pdf"
+
+
+def test_m1_system_uses_deliverable_based_status_criteria():
+    """D-50 守卫：status 判据是"有没有交付物"，不是"能不能客观核对"，别被改回去。"""
+    assert "先看有没有交付物" in M1_SYSTEM
+    assert "拿不准" in M1_SYSTEM
+    assert "无法客观核对的要求" not in M1_SYSTEM

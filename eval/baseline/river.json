@@ -1,0 +1,17 @@
+{
+  "doc_id": "river",
+  "title": "项目简介：河流健康调查",
+  "source_file": "项目简介：河流健康调查.pdf",
+  "scoring_section": "评估标准（过程评估 30% + 产品评估 70%）",
+  "annotator": "人工基线（评测标注）",
+  "annotated_at": "2026-09-13",
+  "points": [
+    {"order": 1, "weight": 10, "decomposable": true,  "label": "研究质量"},
+    {"order": 2, "weight": 10, "decomposable": true,  "label": "数据收集"},
+    {"order": 3, "weight": 10, "decomposable": true,  "label": "反思和修改"},
+    {"order": 4, "weight": 25, "decomposable": true,  "label": "科学准确性"},
+    {"order": 5, "weight": 20, "decomposable": true,  "label": "基于证据的论证"},
+    {"order": 6, "weight": 15, "decomposable": false, "label": "与受众的沟通"},
+    {"order": 7, "weight": 10, "decomposable": false, "label": "建议"}
+  ]
+}

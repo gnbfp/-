@@ -1,0 +1,13 @@
+{
+  "doc_id": "bim",
+  "title": "BIM 技术原理及其应用课程设计",
+  "source_file": "BIM 技术原理及其应用课程设.pdf",
+  "scoring_section": "三、2 成绩评定",
+  "annotator": "人工基线（评测标注）",
+  "annotated_at": "2026-09-13",
+  "points": [
+    {"order": 1, "weight": 30, "decomposable": true,  "label": "BIM模型完整性"},
+    {"order": 2, "weight": 10, "decomposable": true,  "label": "格式规范性"},
+    {"order": 3, "weight": 60, "decomposable": true,  "label": "方案科学性"}
+  ]
+}
