@@ -1,5 +1,6 @@
 """M0 组装层单测：依赖注入 FakeSender / FakeDownloader / FakeLLM（方案 §9）。"""
 
+import itertools
 from datetime import datetime
 
 import pytest
@@ -126,6 +127,9 @@ def env(tmp_path, monkeypatch):
     return gateway, store, sender, downloader
 
 
+_MSG_SEQ = itertools.count(1)
+
+
 def _inbound(text="", **over):
     data = dict(
         chat_id="c1",
@@ -134,7 +138,9 @@ def _inbound(text="", **over):
         text=text,
         sender_type="user",
         sender_open_id="ou_user",
-        message_id="m1",
+        # 每条默认一个新 id：handle() 会按 message_id 去重（P0-A），
+        # 夹具共用 "m1" 会被当成重复事件、第二个 handle 直接空转。
+        message_id=f"m{next(_MSG_SEQ)}",
     )
     data.update(over)
     return Inbound(**data)
@@ -481,7 +487,13 @@ def test_m4_collects_preferences_and_settles_into_assignments(env):
     assert store.load_preferences()[1].ranked_task_ids == ["T1", "T2"]
 
     sender.sent.clear()
-    gateway.handle(_inbound("你想做哪一块"))                   # 组长重发 = 封盘
+    gateway.handle(_inbound("你想做哪一块"))                   # 组长重发 → 二次确认（P0-B）
+
+    assert store.load_state()["awaiting"] == "preference"      # 不再直接封盘
+    assert sender.texts == [replies.PREFERENCE_CONFIRM_SEAL.format(done=2, missing=1)]
+
+    sender.sent.clear()
+    gateway.handle(_inbound("封盘"))                           # 组长确认 → 结算
 
     assert store.load_state()["awaiting"] is None
     assert {a.task_id: (a.assignee, a.source) for a in store.load_assignments()} == {
@@ -576,3 +588,85 @@ def test_a_failed_direct_message_does_not_eat_the_group_reply(env):
 
     assert "任务卡清单" in gateway.sender.texts[0]             # 群里的清单照发
     assert store.load_state()["awaiting"] == "preference"
+
+
+# ---------- M4 真机故障修复（P0-A / P0-C / P0-D / P1-E）----------
+
+
+def test_duplicate_message_id_is_processed_only_once(env):
+    """P0-A：飞书重复投递同一个事件时，第二次必须什么都不做。"""
+    gateway, store, sender, _ = env
+    inbound = _inbound("随便说句话")
+
+    gateway.handle(inbound)
+    sent_before = len(sender.sent)
+    outcome = gateway.handle(inbound)
+
+    assert outcome.replies == ()
+    assert len(sender.sent) == sent_before
+
+
+def test_failed_dm_is_reported_in_the_group(env):
+    """P0-C：私聊发不出去要在群里说出来，不能只留一行 stderr。"""
+    gateway, store, _, _ = env
+    _seed_m4(store)
+
+    class _NoDmSender(FakeSender):
+        def send(self, message):
+            if message.receive_id_type == "open_id":
+                raise RuntimeError("code=230101")
+            return super().send(message)
+
+    sender = _NoDmSender()
+    gateway.sender = sender
+    gateway.handle(_inbound("你想做哪一块"))
+
+    assert sender.sent[-1].chat_id == "c1"
+    assert sender.texts[-1] == replies.PREFERENCE_DM_FAILED.format(count=3)
+
+
+def test_register_clears_a_leftover_preference_window(env):
+    """P0-D：切到登记状态机必须清掉旧志愿窗口。"""
+    gateway, store, _, _ = env
+    _seed_m4(store)
+    gateway.handle(_inbound("你想做哪一块"))
+    assert store.load_state()["awaiting"] == "preference"
+
+    gateway.handle(_inbound("登记"))
+
+    state = store.load_state()
+    assert state["awaiting"] == "register"
+    assert state["preference"] is None
+
+
+def test_preference_window_clears_register_residue(env):
+    """P0-D 反向：开志愿窗口时清掉登记残留。"""
+    gateway, store, _, _ = env
+    _seed_m4(store)
+    gateway.handle(_inbound("登记"))
+    assert store.load_state()["register"] is not None
+
+    gateway.handle(_inbound("你想做哪一块"))
+
+    state = store.load_state()
+    assert state["awaiting"] == "preference"
+    assert state["register"] is None
+
+
+def test_task_list_names_the_source_assignment(env):
+    """P1-E：清单首行点明这套卡来自哪份作业书。"""
+    gateway, store, sender, _ = env
+    _seed_m4(store)
+    store.save_assignment(
+        AssignmentMeta(
+            course="软件系统设计",
+            title="课程任务书",
+            submission="源码 + 报告",
+            deadline="",
+            source_file="课程任务书.pdf",
+        )
+    )
+
+    gateway.handle(_inbound("你想做哪一块"))
+
+    assert sender.texts[0].startswith("当前任务卡来自《课程任务书》（3 张）")

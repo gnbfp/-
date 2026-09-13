@@ -171,3 +171,33 @@ def test_board_counts_a_person_once_by_his_best_source():
     assert "李四 → T2（兜底）/ T4（兜底）" in board
     assert "T5（兜底）" in board                       # 5 张卡 2 个人：谁也躲不掉兜底
     assert board.splitlines()[-1] == "第一志愿 1 人 / 第二志愿 0 人 / 兜底 1 人"
+
+
+def test_task_list_shows_source_title():
+    text = render_task_list([_card("T1")], source_title="软件系统设计实践课程任务书")
+    assert text.splitlines()[0] == "当前任务卡来自《软件系统设计实践课程任务书》（1 张）"
+    assert "1. T1 模块T1（1h）" in text
+
+
+def test_task_list_without_title_keeps_old_shape():
+    text = render_task_list([_card("T1")])
+    assert text.splitlines()[0].startswith("任务卡清单")
+
+
+def test_board_names_who_did_not_submit():
+    """P1-F：末行统计后再点名没交志愿的人，组长才分得清"没填"和"被抢走"。"""
+    cards = [_card("T1"), _card("T2"), _card("T3")]
+    roster = _roster(3)
+    prefs = [_want("ou_a", ["T1"], "2026-09-13T10:00:00")]
+    result = allocate(cards, roster, prefs)
+
+    board = render_board(result, cards, roster, prefs)
+    assert board.splitlines()[-1] == "未交志愿：李四、王五（他们的卡为兜底）"
+
+
+def test_board_without_preferences_omits_the_missing_line():
+    """不传 preferences（None）= 调用方没数据 ⇒ 不渲染未交志愿行。"""
+    cards = [_card("T1")]
+    roster = _roster(2)
+    board = render_board(allocate(cards, roster, []), cards, roster)
+    assert "未交志愿" not in board

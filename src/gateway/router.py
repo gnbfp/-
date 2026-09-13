@@ -68,6 +68,7 @@ def route(
     cards: Sequence = (),
     preferences: Sequence = (),
     now: datetime | None = None,
+    source_title: str = "",
 ) -> Outcome:
     """一条消息 → 一个 Outcome。顺序严格按 D-33：剥 @段 → 状态 → 前缀 → 兜底。
 
@@ -139,6 +140,7 @@ def route(
                 cards=cards,
                 preferences=preferences,
                 now=now,
+                source_title=source_title,
             ),
             state,
             original,
@@ -152,6 +154,7 @@ def route(
         cards=cards,
         preferences=preferences,
         now=now,
+        source_title=source_title,
     )
 
 
@@ -164,6 +167,7 @@ def _by_prefix(
     cards: Sequence = (),
     preferences: Sequence = (),
     now: datetime | None = None,
+    source_title: str = "",
 ) -> Outcome:
     """D-33 的第 3、4 步：7 条前缀精确匹配 → 都不中就是指令列表（T01）。"""
     text = strip_mentions(inbound.text, inbound.mentions).strip()
@@ -178,7 +182,9 @@ def _by_prefix(
     if text.startswith("方向"):
         return Outcome(replies=(reply(inbound, replies.PLACEHOLDER_DIRECTION),))
     if text.startswith("你想做哪一块"):
-        return preference.command(inbound, state, cards, roster, preferences, now)
+        return preference.command(
+            inbound, state, cards, roster, preferences, now, source_title=source_title
+        )
     if any(text.startswith(prefix) for prefix in PROPOSAL_PREFIXES):
         return _proposal(text, inbound, state, now)
     if COMPLETE_PATTERN.match(text):

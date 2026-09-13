@@ -85,21 +85,32 @@ def allocate(
     return [chosen[card.task_id] for card in cards if card.task_id in chosen]
 
 
-def render_task_list(cards: Sequence[TaskCard]) -> str:
-    """发群 / 发私聊的**任务卡清单**：序号就是组员要回复的数字（§2.1 / §2.2）。"""
+def render_task_list(cards: Sequence[TaskCard], source_title: str = "") -> str:
+    """发群 / 发私聊的**任务卡清单**：序号就是组员要回复的数字（§2.1 / §2.2）。
+
+    ``source_title`` 非空时在首行点明这套卡来自哪份作业书（P1-E）—— 新群没发过
+    作业书却看到旧卡时，至少知道来源。纯函数：title 由 app 层读出来传进来。
+    """
+    cards = list(cards or ())
     items = "\n".join(
         f"{index}. {card.task_id} {card.module_name}（{card.effort_hours:g}h）"
         for index, card in enumerate(cards, start=1)
     )
-    return replies.PREFERENCE_LIST.format(items=items)
+    head = f"当前任务卡来自《{source_title}》（{len(cards)} 张）\n" if source_title else ""
+    return head + replies.PREFERENCE_LIST.format(items=items)
 
 
 def render_board(
     assignments: Sequence[AssignmentRecord],
     cards: Sequence[TaskCard],
     roster: Roster | None,
+    preferences: Sequence[Preference] | None = None,
 ) -> str:
-    """**分配总表**（§2.5）：按人分组 + 末行统计。末尾那行是"志愿制的机制证明"。"""
+    """**分配总表**（§2.5）：按人分组 + 末行统计 + 未交志愿名单（P1-F）。
+
+    ``preferences=None`` = "调用方没给志愿数据" ⇒ 不渲染未交志愿那行；
+    传空列表 ``[]`` = "确认没人交" ⇒ 全员都列进未交志愿。
+    """
     members = list(getattr(roster, "members", None) or ())
     by_person: dict[str, list[AssignmentRecord]] = {m.open_id: [] for m in members}
     for record in assignments or ():
@@ -123,6 +134,13 @@ def render_board(
         f"第一志愿 {counts['volunteer_1']} 人 / 第二志愿 {counts['volunteer_2']} 人 / "
         f"兜底 {counts['auto']} 人"
     )
+    if preferences is not None:
+        submitted = {p.user_id for p in preferences}
+        missing = [
+            m.name or m.open_id[:8] or m.open_id for m in members if m.open_id not in submitted
+        ]
+        if missing:
+            lines.append("未交志愿：" + "、".join(missing) + "（他们的卡为兜底）")
     return "\n".join(lines)
 
 

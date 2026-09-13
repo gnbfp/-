@@ -16,6 +16,8 @@
   * **只认私聊**：窗口长达 5 小时，而 ``awaiting`` 是全局的 —— 群里谁打一个裸数字
     都会被记成志愿序号。所以只有 ``chat_type == "p2p"`` 的裸数字算志愿，
     群里一切消息照走 7 条前缀。
+  * **组长重发不再直接封盘**（P0-B / D-56）：窗口里还没人交过 → 只重发清单（幂等）；
+    已有人交过 → 先回一句确认语，组长再发「``封盘``」才结算。
 
 ``M2 的投票窗口仍是 10 分钟``，不要跟着改成 5 小时（用户只让大家动 M4 这一处）。
 """
@@ -32,6 +34,7 @@ from src.models import Preference, Roster, TaskCard
 
 __all__ = [
     "PREFERENCE_TTL",
+    "SEAL_WORD",
     "read_window",
     "command",
     "open_window",
@@ -41,6 +44,10 @@ __all__ = [
 ]
 
 PREFERENCE_TTL = timedelta(hours=5)
+
+# 组长二次确认封盘的词（P0-B / D-56）：在 awaiting=preference 状态机内消费，
+# 不进 7 条前缀。重发「你想做哪一块」不再是封盘按钮。
+SEAL_WORD = "封盘"
 
 # 含中文的消息一定是"某条指令"（7 条前缀里没有一条是纯 ASCII），不可能是志愿序号；
 # 不含中文又不是纯数字的（"abc" / "T2" / "3abc"）才是"序号没看懂"，要回提示。
@@ -71,8 +78,9 @@ def command(
     roster: Roster | None,
     preferences: Sequence[Preference],
     now: datetime | None = None,
+    source_title: str = "",
 ) -> Outcome:
-    """「你想做哪一块」：群里=开窗口（组长重发=封盘），私聊=只回他自己那份清单（§2.1）。"""
+    """「你想做哪一块」：群里=开窗口 / 重发；私聊=只回他自己那份清单（§2.1 / D-56）。"""
     cards = list(cards or ())
     if not cards:
         return Outcome(replies=(reply(inbound, replies.PREFERENCE_NEED_CARDS),))
@@ -80,23 +88,40 @@ def command(
     if not members:
         return Outcome(replies=(reply(inbound, replies.PREFERENCE_NEED_ROSTER),))
 
+    task_list = allocation.render_task_list(cards, source_title=source_title)
     if inbound.chat_type != "group":
         # §7.1 的口径：志愿填报走私聊。私聊发这句只回他自己的清单，**不动窗口** ——
         # 否则随便一个组员私聊发一句就能把窗口关掉。
-        return Outcome(replies=(reply(inbound, allocation.render_task_list(cards)),))
+        return Outcome(replies=(reply(inbound, task_list),))
 
     block, expired = read_window(state, now)
-    if block and (expired or inbound.sender_open_id == roster.leader):
-        # 第 3 条（组长在群里重发）与第 2 条（超时）都落在这里。
+    if block and expired:
+        # 第 2 条：超时 → 当场结算（失效与封盘是同一个动作，D-52）
         settled = settle(state, cards, roster, preferences, now)
         if settled is not None:
             return settled
         state = clear(state)                     # 结不了（还没认下群）：清掉窗口，重新开
     elif block:
+        done = _submitted_count(preferences, members)
+        if not done:
+            # ① 还没人交过：重发清单就够了 —— **不封盘**（P0-B）
+            return Outcome(replies=(reply(inbound, task_list),))
+        if inbound.sender_open_id == roster.leader:
+            # ② 已有人交过：组长重发 = 二次确认，窗口不动，等他说「封盘」
+            return Outcome(
+                replies=(
+                    reply(
+                        inbound,
+                        replies.PREFERENCE_CONFIRM_SEAL.format(
+                            done=done, missing=len(members) - done
+                        ),
+                    ),
+                )
+            )
         # 旁人重发：窗口照旧开着，把清单再发一遍（幂等），不提前封盘、也不刷私聊
-        return Outcome(replies=(reply(inbound, allocation.render_task_list(cards)),))
+        return Outcome(replies=(reply(inbound, task_list),))
 
-    return open_window(inbound, state, cards, members, now)
+    return open_window(inbound, state, cards, members, now, source_title=source_title)
 
 
 def open_window(
@@ -105,6 +130,7 @@ def open_window(
     cards: Sequence[TaskCard],
     members: Sequence,
     now: datetime | None = None,
+    source_title: str = "",
 ) -> Outcome:
     """开一个志愿窗口：清单发群 + **花名册里每个人**私聊一份（§2.1）。"""
     group = (state or {}).get("group_chat_id") or inbound.chat_id
@@ -112,14 +138,20 @@ def open_window(
         "opened_at": _iso(now or datetime.now()),
         "opened_by": inbound.sender_open_id,
     }
-    text = allocation.render_task_list(cards)
+    text = allocation.render_task_list(cards, source_title=source_title)
     out = [Reply(chat_id=group, text=text)]
     for member in members:
         if member.open_id:
             out.append(Reply(chat_id=member.open_id, text=text, receive_id_type="open_id"))
     return Outcome(
         replies=tuple(out),
-        state={**(state or {}), "awaiting": "preference", "preference": block},
+        # 切状态机要清掉登记残留（P0-D）：反向由 register 的 _cleared / register_begin 清志愿窗口。
+        state={
+            **(state or {}),
+            "awaiting": "preference",
+            "preference": block,
+            "register": None,
+        },
     )
 
 
@@ -136,6 +168,14 @@ def accept(
 
     返回 ``None`` 是刻意的：窗口有 5 小时，"完成 T3"「我想提议：…」「作业书」都得照常能用。
     """
+    if inbound.chat_type == "group" and (text or "").strip() == SEAL_WORD:
+        # 「封盘」在本状态机内消费（P0-B / D-56），不进 7 条前缀。只认组长。
+        if inbound.sender_open_id == getattr(roster, "leader", None):
+            settled = settle(state, cards, roster, preferences, now)
+            if settled is not None:
+                return settled
+            return Outcome(state=clear(state))   # 结不了（没认下群）：至少别把卡住的窗口留着
+        return None                              # 旁人喊「封盘」不算数
     if inbound.chat_type != "p2p" or not inbound.sender_open_id:
         return None                              # 群里的裸数字一律不算（D-54）
     known = {member.open_id for member in (getattr(roster, "members", None) or ())}
@@ -192,7 +232,12 @@ def settle(
         return None
     assignments = allocation.allocate(cards, roster, preferences)
     return Outcome(
-        replies=(Reply(chat_id=group, text=allocation.render_board(assignments, cards, roster)),),
+        replies=(
+            Reply(
+                chat_id=group,
+                text=allocation.render_board(assignments, cards, roster, preferences),
+            ),
+        ),
         state=clear(state),
         save_assignments=tuple(record.to_dict() for record in assignments),
     )
@@ -221,6 +266,12 @@ def _dedup(values: Sequence[str]) -> list[str]:
             seen.add(value)
             out.append(value)
     return out
+
+
+def _submitted_count(preferences: Sequence[Preference], members: Sequence) -> int:
+    """花名册里已交志愿的人数（花名册外的残留志愿不算）。"""
+    ids = {member.open_id for member in members}
+    return len({p.user_id for p in (preferences or ()) if p.user_id in ids})
 
 
 def _all_submitted(

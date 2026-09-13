@@ -27,6 +27,8 @@ __all__ = [
     "PREFERENCE_NEED_CARDS",
     "PREFERENCE_NEED_ROSTER",
     "PREFERENCE_NOT_MEMBER",
+    "PREFERENCE_CONFIRM_SEAL",
+    "PREFERENCE_DM_FAILED",
     "NEED_GROUP",
     "PROPOSAL_POSTED",
     "PROPOSAL_ACK",
@@ -81,6 +83,16 @@ PREFERENCE_BAD = "序号我没看懂。我看到的是 {tasks}，重发一次序
 PREFERENCE_NEED_CARDS = "还没有任务卡：先把作业书文件发给我，回「作业书」拆出任务卡。"
 PREFERENCE_NEED_ROSTER = "还没有花名册：先在群里发「登记」建一份，再发「你想做哪一块」。"
 PREFERENCE_NOT_MEMBER = "我这份花名册里没有你：先在群里「登记」把你自己 @ 进去，再私聊我填志愿。"
+# 组长重发「你想做哪一块」不再直接封盘（P0-B / D-56）：有人交过就先确认一次，
+# 免得"为了再发一遍清单"顺手把窗口关了、不可撤回。
+PREFERENCE_CONFIRM_SEAL = (
+    "现在封盘会按已有 {done} 份志愿分配，还有 {missing} 人没交。"
+    "回复「封盘」确认，回复别的继续等。"
+)
+# 主动私聊发不出去时，在群里把话说清楚（P0-C），别"群里说已发、实际没人收到"。
+PREFERENCE_DM_FAILED = (
+    "有 {count} 人我没能私聊到。请这几位私聊我发「你想做哪一块」，我单独回你清单。"
+)
 
 # 主动发群 / 私聊的前置：机器人得先见过至少一条群消息，才知道"群"是哪个（D-54）。
 NEED_GROUP = "我还没认下群：先在群里发一次指令（例如「作业书」），我认一下群。"

@@ -19,7 +19,7 @@ import threading
 from src.config import ConfigError, load_config
 from src.gateway import replies
 from src.gateway.client import FeishuClient
-from src.gateway.events import Inbound, Outcome, reply, to_inbound
+from src.gateway.events import Inbound, Outcome, Reply, reply, to_inbound
 from src.gateway.router import route
 from src.intelligence.coverage import coverage_loop
 from src.intelligence.decompose import decompose
@@ -34,9 +34,12 @@ from src.intelligence.llm import LLMClient, LLMError
 from src.intelligence.parse import parse_assignment
 from src.models import AssignmentRecord, Preference, Roster
 from src.report.checklist import render_checklist
-from src.storage import PREFERENCES, PROPOSALS, JsonStore
+from src.storage import PREFERENCES, PROPOSALS, SEEN, JsonStore
 
 __all__ = ["Gateway", "main"]
+
+# data/seen.json 只留最近这么多条 message_id（P0-A）。
+_SEEN_LIMIT = 200
 
 
 class Gateway:
@@ -61,10 +64,18 @@ class Gateway:
             )
 
     def handle(self, inbound: Inbound) -> Outcome:
-        """快路径：路由 → 回话 → 落盘 → 需要时起后台重活。"""
+        """快路径：路由 → 回话 → 落盘 → 需要时起后台重活。
+
+        第一件事是**按 message_id 去重**（P0-A）：飞书会重复投递 / 重连补投同一个
+        事件，不去重就会把同一条指令完整跑两遍（新群"先清单、再总表"就是这么来的）。
+        重复事件直接丢掉：不发消息、不写业务数据。
+        """
+        if self._is_duplicate(inbound.message_id):
+            return Outcome()
         self._remember_group(inbound)
         state = self.store.load_state()
         has_rubric = bool(self.store.load_rubric())
+        meta = self.store.load_assignment()
         outcome = route(
             inbound,
             state,
@@ -72,8 +83,11 @@ class Gateway:
             has_rubric=has_rubric,
             cards=self.store.load_cards(),
             preferences=self.store.load_preferences(),
+            source_title=meta.title if meta else "",
         )
-        self._deliver(outcome)
+        failures = self._deliver(outcome)
+        # 主动私聊发不出去要说出来（P0-C）：否则"群里说清单已发、实际没人收到"。
+        self._report_dm_failures(failures, outcome.state or state)
 
         # 重活起不起，route() 已经判过（Outcome.pipeline）—— 这里不再自己判一遍，
         # 否则"回了「表单没看懂」却照样跑 M1"（必修 4）
@@ -83,13 +97,31 @@ class Gateway:
             ).start()
         return outcome
 
-    def _deliver(self, outcome: Outcome) -> None:
+    def _is_duplicate(self, message_id: str) -> bool:
+        """P0-A：同一条消息只处理一次。落 ``data/seen.json``，只留最近 ``_SEEN_LIMIT`` 条。
+
+        ``message_id`` 为空（老事件 / 单测夹具）时不去重 —— 没有标识就没法认人。
+        """
+        if not message_id:
+            return False
+        seen = self.store.read_raw(SEEN, []) or []
+        if message_id in seen:
+            return True
+        self.store.mutate_raw(
+            SEEN, lambda items: [*(items or []), message_id][-_SEEN_LIMIT:], default=[]
+        )
+        return False
+
+    def _deliver(self, outcome: Outcome) -> tuple[Reply, ...]:
+        """发出所有回复，返回**发失败的**那些（P0-C）。"""
+        failed: list[Reply] = []
         for message in outcome.replies:
             try:
                 self.sender.send(message)
             except Exception as exc:
                 # 一条发失败不能吃掉后面几条：M4 开窗口要连发"清单发群 + 每人私聊"，
                 # 某个人的私聊发不出去，群里的清单必须照发（方案 §7：不能静默失败）。
+                failed.append(message)
                 print(
                     f"[M0] 发消息失败（已跳过）：{type(exc).__name__}: {exc}", file=sys.stderr
                 )
@@ -103,6 +135,25 @@ class Gateway:
             self._save_assignments(outcome.save_assignments)
         if outcome.save_proposal is not None:
             self._save_proposal(outcome.save_proposal)
+        return tuple(failed)
+
+    def _report_dm_failures(self, failures, state) -> None:
+        """私聊发不出去就在群里补一句（P0-C）。只统计 ``open_id`` 目标 —— 那才是"人"。"""
+        dm_failed = [r for r in failures if r.receive_id_type == "open_id"]
+        group = (state or {}).get("group_chat_id") or ""
+        if not dm_failed or not group:
+            return
+        try:
+            self.sender.send(
+                Reply(
+                    chat_id=group,
+                    text=replies.PREFERENCE_DM_FAILED.format(count=len(dm_failed)),
+                )
+            )
+        except Exception as exc:
+            print(
+                f"[M0] 补发失败提示也失败了：{type(exc).__name__}: {exc}", file=sys.stderr
+            )
 
     # ---------- M4 / M5 的落盘 ----------
 

@@ -203,15 +203,57 @@ def test_settles_immediately_when_everyone_has_submitted():
     assert "分配总表" in outcome.replies[-1].text
 
 
-def test_leader_resending_the_command_settles_the_window():
-    """第 3 条：组长在群里再发一次 → 立即结算（演示 S8 走这条，现场等不起 5 小时）。"""
+def test_leader_resend_with_no_submissions_only_reshows_the_list():
+    """P0-B ①：还没人交过志愿时，组长重发只是再发一遍清单，**不封盘**。"""
     outcome = route(
         _inbound("你想做哪一块"), _state(), _roster(), cards=_cards(), preferences=[], now=OPEN
     )
+    assert outcome.state is None                               # 窗口不动
+    assert outcome.save_assignments == ()
+    assert "1. T1 模块1（1h）" in outcome.replies[0].text
+
+
+def test_leader_resend_with_submissions_asks_for_confirmation():
+    """P0-B ②：已有人交过 → 回确认语，窗口不动，等「封盘」。"""
+    existing = [Preference("ou_li", ["T1"], "2026-09-13T09:01:00")]
+    outcome = route(
+        _inbound("你想做哪一块"),
+        _state(),
+        _roster(),
+        cards=_cards(),
+        preferences=existing,
+        now=OPEN,
+    )
+    assert outcome.state is None                               # 窗口还在
+    assert outcome.save_assignments == ()
+    assert _texts(outcome) == [replies.PREFERENCE_CONFIRM_SEAL.format(done=1, missing=2)]
+
+
+def test_leader_seal_word_settles_the_window():
+    """P0-B ③：组长回「封盘」才结算 —— 总表发群、窗口清空。"""
+    existing = [Preference("ou_li", ["T1"], "2026-09-13T09:01:00")]
+    outcome = route(
+        _inbound("封盘"), _state(), _roster(), cards=_cards(), preferences=existing, now=OPEN
+    )
     assert outcome.state["awaiting"] is None
+    assert [record["task_id"] for record in outcome.save_assignments] == ["T1", "T2", "T3"]
     assert outcome.replies[0].chat_id == GROUP
     assert "分配总表" in outcome.replies[0].text
-    assert len(outcome.save_assignments) == 3                  # 人人有卡（兜底）
+    assert "未交志愿：张三、王五（他们的卡为兜底）" in outcome.replies[0].text
+
+
+def test_non_leader_seal_word_is_not_consumed():
+    """「封盘」只认组长：旁人发这句落到普通兜底（指令列表），不封盘。"""
+    outcome = route(
+        _inbound("封盘", sender_open_id="ou_li"),
+        _state(),
+        _roster(),
+        cards=_cards(),
+        preferences=[Preference("ou_li", ["T1"], "2026-09-13T09:01:00")],
+        now=OPEN,
+    )
+    assert outcome.save_assignments == ()
+    assert _texts(outcome) == [replies.COMMAND_LIST_TEXT]
 
 
 def test_non_leader_resending_gets_the_list_again_instead_of_closing_the_window():
