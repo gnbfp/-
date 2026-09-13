@@ -1,0 +1,15 @@
+{
+  "doc_id": "sw",
+  "title": "软件系统设计与开发实践",
+  "source_file": "软件系统设计与开发实践》课程任 1.pdf",
+  "scoring_section": "八、课程评分标准",
+  "annotator": "人工基线（评测标注）",
+  "annotated_at": "2026-09-13",
+  "points": [
+    {"order": 1, "weight": 10, "decomposable": false, "label": "学习态度遵守纪律"},
+    {"order": 2, "weight": 30, "decomposable": true,  "label": "系统方案设计"},
+    {"order": 3, "weight": 30, "decomposable": true,  "label": "系统实现情况"},
+    {"order": 4, "weight": 20, "decomposable": true,  "label": "报告文档质量"},
+    {"order": 5, "weight": 10, "decomposable": true,  "label": "提交及验收情况"}
+  ]
+}

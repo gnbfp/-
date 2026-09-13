@@ -1,0 +1,14 @@
+{
+  "doc_id": "marketing",
+  "title": "营销方案计划",
+  "source_file": "营销方案计划》任务书.pdf",
+  "scoring_section": "附件1 三、评分标准",
+  "annotator": "人工基线（评测标注）",
+  "annotated_at": "2026-09-13",
+  "points": [
+    {"order": 1, "weight": 5,  "decomposable": true, "label": "写作水平与格式"},
+    {"order": 2, "weight": 25, "decomposable": true, "label": "市场部分分析"},
+    {"order": 3, "weight": 65, "decomposable": true, "label": "营销策略文件"},
+    {"order": 4, "weight": 5,  "decomposable": true, "label": "文件整理上传"}
+  ]
+}
