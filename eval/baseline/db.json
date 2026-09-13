@@ -2,12 +2,12 @@
   "doc_id": "db",
   "title": "数据库课程设计任务书",
   "source_file": "数据库课程设计任务书.pdf",
-  "scoring_section": "五、3 成绩评定",
-  "annotator": "AI 预标（待人工独立重标）",
+  "scoring_section": "五、3 课程设计的成绩评定",
+  "annotator": "左",
   "annotated_at": "2026-09-13",
   "points": [
-    {"order": 1, "weight": 40, "decomposable": false, "label": "平时出勤与笔记"},
-    {"order": 2, "weight": 40, "decomposable": true,  "label": "设计报告"},
-    {"order": 3, "weight": 20, "decomposable": true,  "label": "数据库及应用系统"}
+    {"order": 1, "weight": 40, "decomposable": true, "label": "平时考核"},
+    {"order": 2, "weight": 40, "decomposable": true, "label": "设计报告"},
+    {"order": 3, "weight": 20, "decomposable": true, "label": "数据库及应用系统"}
   ]
 }
