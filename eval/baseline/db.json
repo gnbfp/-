@@ -6,8 +6,8 @@
   "annotator": "左",
   "annotated_at": "2026-09-13",
   "points": [
-    {"order": 1, "weight": 40, "decomposable": true, "label": "平时考核"},
-    {"order": 2, "weight": 40, "decomposable": true, "label": "设计报告"},
-    {"order": 3, "weight": 20, "decomposable": true, "label": "数据库及应用系统"}
+    {"order": 1, "weight": 40, "decomposable": true,  "label": "平时考核"},
+    {"order": 2, "weight": 40, "decomposable": true,  "label": "设计报告"},
+    {"order": 3, "weight": 20, "decomposable": true,  "label": "数据库及应用系统"}
   ]
 }

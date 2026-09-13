@@ -6,12 +6,12 @@
   "annotator": "左",
   "annotated_at": "2026-09-13",
   "points": [
-    {"order": 1, "weight": 10, "decomposable": true, "label": "研究质量"},
-    {"order": 2, "weight": 10, "decomposable": true, "label": "数据收集"},
-    {"order": 3, "weight": 10, "decomposable": true, "label": "反思和修改"},
-    {"order": 4, "weight": 25, "decomposable": true, "label": "科学准确性"},
-    {"order": 5, "weight": 20, "decomposable": true, "label": "基于证据的论证"},
-    {"order": 6, "weight": 15, "decomposable": true, "label": "与受众的沟通"},
-    {"order": 7, "weight": 10, "decomposable": true, "label": "改进建议"}
+    {"order": 1, "weight": 10, "decomposable": true,  "label": "研究质量"},
+    {"order": 2, "weight": 10, "decomposable": true,  "label": "数据收集"},
+    {"order": 3, "weight": 10, "decomposable": true,  "label": "反思和修改"},
+    {"order": 4, "weight": 25, "decomposable": true,  "label": "科学准确性"},
+    {"order": 5, "weight": 20, "decomposable": true,  "label": "基于证据的论证"},
+    {"order": 6, "weight": 15, "decomposable": true,  "label": "与受众的沟通"},
+    {"order": 7, "weight": 10, "decomposable": true,  "label": "改进建议"}
   ]
 }

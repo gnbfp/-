@@ -6,9 +6,9 @@
   "annotator": "左",
   "annotated_at": "2026-09-13",
   "points": [
-    {"order": 1, "weight": 5, "decomposable": true, "label": "写作水平与格式"},
+    {"order": 1, "weight": 5,  "decomposable": true, "label": "写作水平与格式"},
     {"order": 2, "weight": 25, "decomposable": true, "label": "市场部分分析"},
     {"order": 3, "weight": 65, "decomposable": true, "label": "营销策略文件"},
-    {"order": 4, "weight": 5, "decomposable": true, "label": "文件整理上传"}
+    {"order": 4, "weight": 5,  "decomposable": true, "label": "文件整理上传"}
   ]
 }

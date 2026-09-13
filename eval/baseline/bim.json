@@ -6,8 +6,8 @@
   "annotator": "左",
   "annotated_at": "2026-09-13",
   "points": [
-    {"order": 1, "weight": 30, "decomposable": true, "label": "BIM模型完整性"},
-    {"order": 2, "weight": 10, "decomposable": true, "label": "报告格式规范性"},
-    {"order": 3, "weight": 60, "decomposable": true, "label": "方案科学性"}
+    {"order": 1, "weight": 30, "decomposable": true,  "label": "BIM模型完整性"},
+    {"order": 2, "weight": 10, "decomposable": true,  "label": "报告格式规范性"},
+    {"order": 3, "weight": 60, "decomposable": true,  "label": "方案科学性"}
   ]
 }

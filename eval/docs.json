@@ -1,7 +1,7 @@
 [
-  {"doc_id": "bim",       "title": "BIM 技术原理及其应用课程设计", "file": "C:/Users/617/Desktop/作业书/BIM 技术原理及其应用课程设.pdf"},
-  {"doc_id": "db",        "title": "数据库课程设计任务书",         "file": "C:/Users/617/Desktop/作业书/数据库课程设计任务书.pdf"},
-  {"doc_id": "sw",        "title": "软件系统设计与开发实践",       "file": "C:/Users/617/Desktop/作业书/软件系统设计与开发实践》课程任 1.pdf"},
-  {"doc_id": "marketing", "title": "营销方案计划",                 "file": "C:/Users/617/Desktop/作业书/营销方案计划》任务书.pdf"},
-  {"doc_id": "river",     "title": "项目简介：河流健康调查",       "file": "C:/Users/617/Desktop/作业书/项目简介：河流健康调查.pdf"}
+  {"doc_id": "bim",       "title": "BIM 技术原理及其应用课程设计",     "file": "C:/Users/617/Desktop/作业书/BIM 技术原理及其应用课程设.pdf"},
+  {"doc_id": "db",        "title": "数据库课程设计任务书",             "file": "C:/Users/617/Desktop/作业书/数据库课程设计任务书.pdf"},
+  {"doc_id": "sw",        "title": "软件系统设计与开发实践课程任务书", "file": "C:/Users/617/Desktop/作业书/软件系统设计与开发实践》课程任 1.pdf"},
+  {"doc_id": "marketing", "title": "营销方案计划任务书",               "file": "C:/Users/617/Desktop/作业书/营销方案计划》任务书.pdf"},
+  {"doc_id": "river",     "title": "项目简介：河流健康调查",           "file": "C:/Users/617/Desktop/作业书/项目简介：河流健康调查.pdf"}
 ]
