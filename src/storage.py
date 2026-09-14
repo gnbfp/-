@@ -38,6 +38,7 @@ __all__ = [
     "PREFERENCES",
     "ASSIGNMENTS",
     "PROPOSALS",
+    "DIRECTION",
     "MEMBERS",
     "STATE",
     "SEEN",
@@ -51,6 +52,8 @@ CARDS = "cards.json"
 PREFERENCES = "preferences.json"
 ASSIGNMENTS = "assignments.json"
 PROPOSALS = "proposals.json"
+# M2 方向落定结果（§2.6）。字段级定义 requirements.md 没有，所以走裸 JSON，同 proposals.json。
+DIRECTION = "direction.json"
 MEMBERS = "members.json"
 STATE = "state.json"
 SEEN = "seen.json"        # P0-A 事件去重（最近 200 条 message_id）
@@ -208,6 +211,14 @@ class JsonStore:
 
     def save_proposals(self, proposals: list[dict]) -> None:
         self.write_raw(PROPOSALS, proposals)
+
+    # ---------- 方向落定（M2 写，M7 展示用；整份覆盖）----------
+
+    def load_direction(self) -> dict:
+        return self.read_raw(DIRECTION, {}) or {}
+
+    def save_direction(self, payload: dict) -> None:
+        self.write_raw(DIRECTION, payload)
 
     def load_state(self) -> dict:
         return self.read_raw(STATE, {}) or {}

@@ -68,6 +68,24 @@ M3_PAYLOAD = {
 }
 
 
+DIRECTION_PAYLOAD = {
+    "directions": [
+        {
+            "id": 1,
+            "title": "做一个校园二手交易平台",
+            "note": "对上 R1 系统方案",
+            "rubric_refs": ["R1"],
+        },
+        {
+            "id": 2,
+            "title": "做一个课程问答机器人",
+            "note": "对上 R2 报告文档",
+            "rubric_refs": ["R2"],
+        },
+    ]
+}
+
+
 class FakeSender:
     def __init__(self):
         self.sent = []
@@ -103,7 +121,12 @@ class FakeLLM:
     def chat_json(self, system, user, parse, **kwargs):
         if self.error:
             raise self.error
-        payload = M1_PAYLOAD if "M1 输入解析" in system else M3_PAYLOAD
+        if "M2 方向候选" in system:
+            payload = DIRECTION_PAYLOAD
+        elif "M1 输入解析" in system:
+            payload = M1_PAYLOAD
+        else:
+            payload = M3_PAYLOAD
         return parse(payload)
 
 
@@ -535,6 +558,81 @@ def test_m4_group_digits_during_the_window_are_ignored(env):
 
     assert store.load_preferences() == []
     assert sender.texts == [replies.COMMAND_LIST_TEXT]
+
+
+def _seed_direction(store):
+    """M2 的两样前置：评分点（data/rubric.json）+ 花名册（data/members.json）。"""
+    store.save_rubric(
+        [
+            RubricPoint(id="R1", quote="实现词法分析器", observable="可运行"),
+            RubricPoint(id="R2", quote="撰写实验报告", observable="有报告"),
+        ]
+    )
+    store.save_members(
+        Roster(
+            leader="ou_user",
+            members=[
+                Member(open_id=open_id, name=name)
+                for open_id, name in (
+                    ("ou_user", "张三"),
+                    ("ou_b", "李四"),
+                    ("ou_c", "王五"),
+                )
+            ],
+            registered_at="2026-09-13T09:00:00",
+            confirmed_by="ou_user",
+        )
+    )
+
+
+# ---------- M2 方向候选 + 群内投票（§2.2 / §2.6）----------
+
+
+def test_direction_pipeline_opens_a_vote_window_and_posts_candidates(env):
+    gateway, store, sender, _ = env
+    _seed_direction(store)
+
+    gateway.handle(_inbound("方向"))
+
+    assert sender.texts[0] == replies.VOTE_GENERATING
+    state = store.load_state()
+    assert state["awaiting"] == "vote"
+    assert [c["id"] for c in state["vote"]["candidates"]] == [1, 2]
+    assert state["vote"]["chat_id"] == "c1"          # 窗口记下开窗那个群（P1-H）
+
+    posted = sender.sent[-1]
+    assert posted.chat_id == "c1"
+    assert "仅供参考，由全组拍板" in posted.text
+    assert "做一个校园二手交易平台" in posted.text
+
+
+def test_direction_window_settles_and_writes_direction_json(env):
+    gateway, store, sender, _ = env
+    _seed_direction(store)
+    gateway.handle(_inbound("方向"))
+    sender.sent.clear()
+
+    gateway.handle(_inbound("1", sender_open_id="ou_b"))
+    gateway.handle(_inbound("2", sender_open_id="ou_c"))
+    gateway.handle(_inbound("1", sender_open_id="ou_c"))   # 改投 → 1 号 2 票
+
+    payload = store.load_direction()
+    assert payload["winner"]["id"] == 1
+    assert payload["decided_by"] == "vote"
+    assert payload["reason"] == "过半落定"
+    assert store.load_state()["awaiting"] is None
+    assert "方向已定" in sender.texts[-1]
+
+
+def test_direction_pipeline_without_rubric_says_so(env):
+    gateway, store, sender, _ = env
+    _seed_direction(store)
+    store.save_rubric([])
+
+    gateway.handle(_inbound("方向"))
+
+    assert sender.texts == [replies.NEEDS_RUBRIC]
+    assert store.load_state().get("awaiting") is None
 
 
 # ---------- M5 匿名代言（§6.5 / D-55）----------

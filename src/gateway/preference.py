@@ -154,6 +154,8 @@ def open_window(
             "awaiting": "preference",
             "preference": block,
             "register": None,
+            # M2 的投票窗口反向互清（§2.7）：两个状态机都吃裸数字，不能互相残留。
+            "vote": None,
         },
     )
 

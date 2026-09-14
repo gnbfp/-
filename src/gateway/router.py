@@ -7,7 +7,8 @@ M0 网关方案 §4 / §5 / §6 / §7。
 进出都是纯数据（``Inbound`` / ``dict`` / ``Outcome``）：不联网、不发消息、不读文件，
 所以这一整套规则可以在没有飞书、没有网络的情况下全量单测。
 
-两条指令的状态机在各自的文件里，本文件只做"接管 or 放行"：
+三条指令的状态机在各自的文件里，本文件只做"接管 or 放行"：
+  * 「方向」→ ``vote.command()``（群里起 M2 生成候选并开投票窗口；组长「封盘」拍板）；
   * 「你想做哪一块」→ ``preference.command()``（群里开窗口 / 组长重发=封盘）；
   * 「我想提议：…」→ ``_proposal()``（匿名转达 + 留痕）。
 
@@ -23,7 +24,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import Sequence
 
-from src.gateway import preference, register, replies
+from src.gateway import preference, register, replies, vote
 from src.gateway.events import Inbound, Mention, Outcome, Reply, reply
 
 __all__ = [
@@ -117,7 +118,26 @@ def route(
         if mode == "silent":
             return Outcome()
     if awaiting == "vote":
-        return Outcome(replies=(reply(inbound, replies.PLACEHOLDER_VOTE),))
+        # 方向投票窗口（M2，D-35 / D-36）：只认开窗那个群的花名册成员；
+        # **不命中一律回退 7 条前缀** —— 窗口开着时「拆解」「作业书」必须照常干活，
+        # 不然就是一个吃掉指令的死锁窗口（必修 1 的同款病）。
+        hit = vote.accept(text, inbound, state, roster, now)
+        if hit is not None:
+            return hit
+        return _merge(
+            _by_prefix(
+                inbound,
+                state,
+                roster,
+                has_rubric=has_rubric,
+                cards=cards,
+                preferences=preferences,
+                now=now,
+                source_title=source_title,
+            ),
+            state,
+            original,
+        )
     if awaiting == "preference":
         # 志愿窗口（5 小时，D-52~D-54）：过期就当场结算，没过期就试收志愿；
         # 都不是（群里发数字 / 私聊发指令）→ 照走 7 条前缀。
@@ -180,7 +200,9 @@ def _by_prefix(
             pipeline="decompose" if has_rubric else "",
         )
     if text.startswith("方向"):
-        return Outcome(replies=(reply(inbound, replies.PLACEHOLDER_DIRECTION),))
+        # M2：群里 = 起后台生成候选 + 开投票窗口；私聊 = 指出"去群里发"（§2.2）。
+        # 前置缺失（没评分点 / 没花名册）都在 vote.command() 里判，**都不起 pipeline**。
+        return vote.command(inbound, state, roster, has_rubric=has_rubric, now=now)
     if text.startswith("你想做哪一块"):
         return preference.command(
             inbound, state, cards, roster, preferences, now, source_title=source_title
