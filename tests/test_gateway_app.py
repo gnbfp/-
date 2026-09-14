@@ -4,16 +4,17 @@ import itertools
 import json
 import os
 import socket
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 
 from src.gateway import app as app_module
 from src.gateway import replies
-from src.gateway.events import Inbound, Mention
+from src.gateway.events import ImageOut, Inbound, Mention, Outcome
+from src.gateway.reminder import TIER_T1
 from src.intelligence.extract import ExtractError
 from src.intelligence.llm import LLMError
-from src.models import AssignmentMeta, Member, Roster, RubricPoint, TaskCard
+from src.models import AssignmentMeta, AssignmentRecord, Member, Roster, RubricPoint, TaskCard
 from src.storage import JsonStore
 
 DOC = "作业书：1 实现词法分析器 40 分。2 撰写实验报告 60 分。"
@@ -89,9 +90,14 @@ DIRECTION_PAYLOAD = {
 class FakeSender:
     def __init__(self):
         self.sent = []
+        self.images = []
 
     def send(self, message):
         self.sent.append(message)
+        return True
+
+    def send_image(self, chat_id, path, receive_id_type="chat_id"):
+        self.images.append((chat_id, str(path), receive_id_type))
         return True
 
     @property
@@ -837,4 +843,237 @@ def test_pipeline_reply_failure_is_logged_not_silent(env, capsys):
     gateway.handle(_inbound("作业书"))            # 不抛异常 = 后台线程没被炸掉
 
     out = capsys.readouterr().out
-    assert "失败(RuntimeError)" in out           # 失败留在轨迹里
+    assert "失败(RuntimeError: send died)" in out   # 轨迹里带上了异常 message
+
+
+# ---------- M6 / M7（D-64 / D-65 / D-66）----------
+
+
+def _incomplete_report_store(store, leader="ou_boss"):
+    """把 M7 报告要的四份产物都摆好（作业书 / 评分点 / 任务卡 / 花名册 + 分配）。"""
+    store.save_assignment(
+        AssignmentMeta(
+            course="编译原理",
+            title="课程设计",
+            submission="源码 + 报告",
+            deadline="2026-09-19T23:59",
+            source_file="作业书.txt",
+        )
+    )
+    store.save_rubric(
+        [
+            RubricPoint(
+                id="R1", quote="实现词法分析器", observable="可运行", status="normal", weight=100
+            )
+        ]
+    )
+    store.save_cards(
+        [
+            TaskCard(
+                task_id="T1",
+                module_name="实现词法分析器",
+                rubric_refs=["R1"],
+                effort_hours=4.0,
+                deliverable="一个源文件",
+                acceptance="可运行",
+            )
+        ]
+    )
+    store.save_members(
+        Roster(
+            leader=leader,
+            members=[
+                Member(open_id=leader, name="组长"),
+                Member(open_id="ou_member", name="组员"),
+            ],
+            registered_at="2026-09-14T09:00:00",
+            confirmed_by=leader,
+        )
+    )
+    store.save_assignments(
+        [AssignmentRecord(task_id="T1", assignee=leader, source="volunteer_1")]
+    )
+
+
+def test_private_complete_marks_only_that_record(env):
+    gateway, store, sender, _ = env
+    store.save_assignments(
+        [
+            AssignmentRecord(task_id="T1", assignee="ou_user", source="volunteer_1"),
+            AssignmentRecord(task_id="T2", assignee="ou_other", source="auto"),
+        ]
+    )
+
+    gateway.handle(_inbound("完成 T1", chat_type="p2p", chat_id="p1", sender_open_id="ou_user"))
+
+    assert sender.texts[0] == replies.COMPLETE_OK.format(task_id="T1", module="T1")
+    records = {r.task_id: r for r in store.load_assignments()}
+    assert records["T1"].completed_at                      # 落盘了
+    assert records["T2"].completed_at is None              # 只改那一条（mutate_many）
+
+
+def test_marking_complete_twice_keeps_the_first_timestamp(env):
+    gateway, store, sender, _ = env
+    store.save_assignments(
+        [AssignmentRecord(task_id="T1", assignee="ou_user", source="volunteer_1")]
+    )
+    kwargs = dict(chat_type="p2p", chat_id="p1", sender_open_id="ou_user")
+
+    gateway.handle(_inbound("完成 T1", **kwargs))
+    first = {r.task_id: r for r in store.load_assignments()}["T1"].completed_at
+    gateway.handle(_inbound("完成 T1", **kwargs))
+
+    assert sender.texts[1] == replies.COMPLETE_ALREADY.format(task_id="T1", at=first)
+    assert {r.task_id: r for r in store.load_assignments()}["T1"].completed_at == first
+
+
+def test_report_posts_the_board_the_checklist_and_a_gantt(env):
+    gateway, store, sender, _ = env
+    _incomplete_report_store(store)
+
+    gateway.handle(_inbound("报告", sender_open_id="ou_boss"))
+
+    assert sender.texts[0] == replies.REPORT_GENERATING
+    # 必修 F：总表、核对清单拆成两条（拼成一条长文本客户端会折叠）
+    assert len(sender.texts) == 3
+    board, checklist = sender.texts[1], sender.texts[2]
+    assert "分配总表" in board
+    assert "完成 0/1 张" in board                            # M7 的执行列
+    assert "评分点核对清单" in checklist
+    assert "负责人：组长" in checklist
+    assert sender.images and sender.images[0][0] == "c1"    # 甘特图发的是这个群
+    saved = store.path("report.md").read_text(encoding="utf-8")
+    assert "分配总表" in saved and "评分点核对清单" in saved   # 存档仍是完整版
+    assert store.path("gantt.png").read_bytes()[:4] == b"\x89PNG"
+
+
+def test_report_from_a_member_is_refused_and_runs_nothing(env):
+    gateway, store, sender, _ = env
+    _incomplete_report_store(store)
+
+    gateway.handle(_inbound("报告", sender_open_id="ou_member"))
+
+    assert sender.texts == [replies.REPORT_NEED_LEADER]
+    assert sender.images == []
+    assert not store.path("gantt.png").exists()
+
+
+def test_images_are_delivered_through_the_sender(env):
+    gateway, store, sender, _ = env
+
+    gateway._deliver(Outcome(images=(ImageOut(chat_id="c1", path="gantt.png"),)))
+
+    assert sender.images == [("c1", "gantt.png", "chat_id")]
+
+
+def test_a_failed_gantt_is_reported_in_the_group(env):
+    """必修 D：图没发出去要在群里说一声，不能只留文字版。"""
+    gateway, store, sender, _ = env
+
+    class _NoImageSender(FakeSender):
+        def send_image(self, chat_id, path, receive_id_type="chat_id"):
+            raise RuntimeError("boom")
+
+    gateway.sender = _NoImageSender()
+    gateway._deliver(Outcome(images=(ImageOut(chat_id="c1", path="gantt.png"),)))
+
+    assert gateway.sender.texts == [replies.IMAGE_SEND_FAILED]
+
+
+def test_resettling_keeps_completed_at_only_for_the_same_assignee(env):
+    """必修 B / D-67：重开志愿窗口不能把完成标记清零；换人则不继承前任的。"""
+    gateway, store, sender, _ = env
+    store.save_assignments(
+        [
+            AssignmentRecord(
+                task_id="T1", assignee="ou_a", source="volunteer_1",
+                completed_at="2026-09-14T09:00:00",
+            ),
+            AssignmentRecord(
+                task_id="T2", assignee="ou_a", source="volunteer_1",
+                completed_at="2026-09-14T09:30:00",
+            ),
+        ]
+    )
+
+    gateway._deliver(
+        Outcome(
+            save_assignments=(
+                {"task_id": "T1", "assignee": "ou_a", "source": "volunteer_1"},
+                {"task_id": "T2", "assignee": "ou_b", "source": "volunteer_1"},
+            )
+        )
+    )
+
+    records = {r.task_id: r for r in store.load_assignments()}
+    assert records["T1"].completed_at == "2026-09-14T09:00:00"   # 负责人没变 -> 保留
+    assert records["T2"].completed_at is None                    # 换人了 -> 丢掉
+
+
+def _seed_due_task(store, hours=30):
+    deadline = (datetime.now() + timedelta(hours=hours)).isoformat(timespec="minutes")
+    store.save_state({"group_chat_id": "c1"})
+    store.save_assignment(
+        AssignmentMeta(
+            course="编译原理",
+            title="课程设计",
+            submission="源码",
+            deadline=deadline,
+            source_file="作业书.txt",
+        )
+    )
+    store.save_cards(
+        [
+            TaskCard(
+                task_id="T1",
+                module_name="模块1",
+                rubric_refs=["R1"],
+                effort_hours=2.0,
+                deliverable="交付物",
+                acceptance="验收标准",
+            )
+        ]
+    )
+    store.save_assignments(
+        [AssignmentRecord(task_id="T1", assignee="ou_a", source="volunteer_1")]
+    )
+
+
+def test_reminder_scan_sends_a_real_mention_and_records_it(env):
+    gateway, store, sender, _ = env
+    _seed_due_task(store)
+
+    due = gateway.scan_reminders()
+
+    assert [r.task_id for r in due] == ["T1"]
+    assert '<at user_id="ou_a"></at>' in sender.texts[-1]    # 真 @ 语法，不是纯文本
+    record = store.read_raw("reminders.json", [])[0]
+    assert record["tier"] == TIER_T1 and record["ok"] is True
+
+    sent_before = len(sender.sent)
+    assert gateway.scan_reminders() == []                    # 同 (task_id, tier) 只催一次
+    assert len(sender.sent) == sent_before
+
+
+def test_a_failed_reminder_is_still_recorded(env):
+    """发失败也要留痕（``ok: false``）—— T11 要的"有送达记录"是成败都记。"""
+    gateway, store, sender, _ = env
+    _seed_due_task(store)
+
+    class _BrokenSender(FakeSender):
+        def send(self, message):
+            raise RuntimeError("boom")
+
+    gateway.sender = _BrokenSender()
+    gateway.scan_reminders()
+
+    assert store.read_raw("reminders.json", [])[0]["ok"] is False
+
+
+def test_reminder_scan_without_a_known_group_does_nothing(env):
+    gateway, store, sender, _ = env
+    _seed_due_task(store)
+    store.save_state({})                                     # 还没见过任何群消息
+
+    assert gateway.scan_reminders() == []
+    assert sender.sent == []

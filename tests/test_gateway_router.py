@@ -11,7 +11,7 @@ from src.gateway.router import (
     route,
     strip_mentions,
 )
-from src.models import Member, Roster, TaskCard
+from src.models import AssignmentRecord, Member, Roster, TaskCard
 
 
 def _inbound(text="", **over):
@@ -230,9 +230,73 @@ def test_proposal_accepts_both_colon_widths():
 
 
 def test_complete_matches_tn_with_spaces_and_case():
+    """容忍空格与大小写；群里发只回"去私聊"（M6 §2.1）。"""
     for text in ("完成 T3", "完成T3", "完成 t7", "完成  T12"):
         assert COMPLETE_PATTERN.match(text)
-        assert _texts(route(_inbound(text), {}, None)) == [replies.PLACEHOLDER_COMPLETE]
+        assert _texts(route(_inbound(text), {}, None)) == [replies.COMPLETE_NEED_DM]
+
+
+def test_complete_requires_the_whole_command():
+    """"完成 T3 谢谢" 不当成标记完成 —— 整句必须就是这条指令，编号不许猜。"""
+    assert not COMPLETE_PATTERN.match("完成 T3 谢谢")
+    assert _texts(route(_inbound("完成 T3 谢谢"), {}, None)) == [replies.COMMAND_LIST_TEXT]
+
+
+def test_complete_uses_the_assignments_the_app_layer_loaded():
+    """router 是纯函数：分配记录由 app 层传进来，私聊标记才认得出"是你的卡"。"""
+    cards, roster = _m4_fixtures()
+    outcome = route(
+        _inbound("完成 T1", chat_type="p2p"),
+        {},
+        roster,
+        cards=cards,
+        assignments=[AssignmentRecord("T1", "ou_user", "volunteer_1")],
+        now=datetime(2026, 9, 14, 10, 0, 0),
+    )
+    assert outcome.save_complete == {
+        "task_id": "T1",
+        "completed_at": "2026-09-14T10:00:00",
+    }
+
+
+def _report_fixtures():
+    cards, roster = _m4_fixtures()               # 组长 = ou_zhang
+    return cards, roster, [AssignmentRecord("T1", "ou_zhang", "volunteer_1")]
+
+
+def test_report_is_leader_only_and_group_only():
+    """M7 触发点 = 方案 A（D-64）：私聊不发报告，组员要报告只回一句。"""
+    cards, roster, assignments = _report_fixtures()
+    common = dict(cards=cards, assignments=assignments)
+    assert _texts(
+        route(_inbound("报告", chat_type="p2p", sender_open_id="ou_zhang"), {}, roster, **common)
+    ) == [replies.REPORT_NEED_GROUP]
+    assert _texts(route(_inbound("报告", sender_open_id="ou_li"), {}, roster, **common)) == [
+        replies.REPORT_NEED_LEADER
+    ]
+
+
+def test_report_needs_roster_then_assignments():
+    cards, roster, assignments = _report_fixtures()
+    assert _texts(route(_inbound("报告", sender_open_id="ou_zhang"), {}, None, cards=cards)) == [
+        replies.REPORT_NEED_ROSTER
+    ]
+    assert _texts(
+        route(_inbound("报告", sender_open_id="ou_zhang"), {}, roster, cards=cards)
+    ) == [replies.REPORT_NEED_ASSIGNMENTS]
+
+
+def test_report_by_the_leader_starts_the_pipeline():
+    cards, roster, assignments = _report_fixtures()
+    outcome = route(
+        _inbound("报告", sender_open_id="ou_zhang"),
+        {},
+        roster,
+        cards=cards,
+        assignments=assignments,
+    )
+    assert _texts(outcome) == [replies.REPORT_GENERATING]
+    assert outcome.pipeline == "report"
 
 
 def test_register_starts_the_state_machine():
