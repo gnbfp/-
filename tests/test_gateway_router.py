@@ -206,8 +206,11 @@ def test_decompose_with_rubric_acks():
     assert _texts(route(_inbound("拆解"), {}, None, has_rubric=True)) == [replies.DECOMPOSING]
 
 
-def test_direction_is_placeholder():
-    assert _texts(route(_inbound("方向"), {}, None)) == [replies.PLACEHOLDER_DIRECTION]
+def test_direction_without_rubric_points_to_assignment():
+    """M2：没有评分点就不生成候选（D-48 口径），也不起重活。"""
+    outcome = route(_inbound("方向"), {}, None, has_rubric=False)
+    assert _texts(outcome) == [replies.NEEDS_RUBRIC]
+    assert outcome.pipeline == ""
 
 
 def test_preference_command_without_cards_points_to_assignment():
@@ -245,9 +248,13 @@ def test_unmatched_text_returns_command_list():
 # ---------- 状态优先 ----------
 
 
-def test_awaiting_vote_wins_over_prefix_matching():
-    outcome = route(_inbound("2", ), {"awaiting": "vote"}, None)
-    assert _texts(outcome) == [replies.PLACEHOLDER_VOTE]
+def test_awaiting_vote_without_a_window_falls_through():
+    """脏 state（awaiting=vote 但没有窗口块）不能吃掉消息：照走兜底文案。
+
+    真正的收票 / 落定在 tests/test_vote.py；这里只保底"没有窗口就放行"。
+    """
+    outcome = route(_inbound("2"), {"awaiting": "vote"}, None)
+    assert _texts(outcome) == [replies.COMMAND_LIST_TEXT]
 
 
 def test_awaiting_preference_only_counts_digits_in_p2p():
@@ -310,7 +317,7 @@ def test_collect_stage_lets_plain_commands_through():
     修之前：发一次「登记」不填表，全群的指令都被吃掉、且永不超时。
     """
     state = {"awaiting": "register", "register": {"stage": "collect", "expires_at": None}}
-    assert _texts(route(_inbound("方向"), state, None)) == [replies.PLACEHOLDER_DIRECTION]
+    assert _texts(route(_inbound("方向"), state, None)) == [replies.NEEDS_RUBRIC]
     assert _texts(route(_inbound("作业书"), state, None)) == [replies.FILE_MISSING]
     assert _texts(route(_inbound("今天天气不错"), state, None)) == [replies.COMMAND_LIST_TEXT]
     # 有缓存文件时照常干活：窗口不吃指令
@@ -370,7 +377,7 @@ _FORM_MENTIONS = (
 def test_initiator_command_with_mention_is_not_parsed_as_a_form():
     """真机复现：窗口里发起人发「@机器人 方向」被回成「表单里「组长」要正好 1 个人」。"""
     outcome = route(_inbound("@_user_1 方向", mentions=_AT), _window(), None)
-    assert _texts(outcome) == [replies.PLACEHOLDER_DIRECTION]
+    assert _texts(outcome) == [replies.NEEDS_RUBRIC]
     assert outcome.state is None                      # 窗口不动
 
 
@@ -378,13 +385,13 @@ def test_stranger_command_with_mention_is_not_swallowed():
     """真机复现：窗口里旁人发「@机器人 方向」一个字都不回（最恶劣）。"""
     inbound = _inbound("@_user_1 方向", mentions=_AT, sender_open_id="ou_stranger")
     outcome = route(inbound, _window(), None)
-    assert _texts(outcome) == [replies.PLACEHOLDER_DIRECTION]
+    assert _texts(outcome) == [replies.NEEDS_RUBRIC]
     assert outcome.state is None
 
 
 def test_initiator_command_without_mention_still_passes_through():
     """对照：同一句不带 @ 一直是正常的。"""
-    assert _texts(route(_inbound("方向"), _window(), None)) == [replies.PLACEHOLDER_DIRECTION]
+    assert _texts(route(_inbound("方向"), _window(), None)) == [replies.NEEDS_RUBRIC]
 
 
 def test_stranger_form_is_silent_and_does_not_advance():

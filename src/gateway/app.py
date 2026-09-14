@@ -21,12 +21,13 @@ from datetime import datetime
 from pathlib import Path
 
 from src.config import ConfigError, load_config
-from src.gateway import replies
+from src.gateway import replies, vote
 from src.gateway.client import FeishuClient
 from src.gateway.events import Inbound, Outcome, Reply, reply, to_inbound
 from src.gateway.router import route
 from src.intelligence.coverage import coverage_loop
 from src.intelligence.decompose import decompose
+from src.intelligence.direction import generate_directions
 from src.intelligence.extract import (
     ExtractError,
     check_deadline,
@@ -227,6 +228,8 @@ class Gateway:
             self._save_assignments(outcome.save_assignments)
         if outcome.save_proposal is not None:
             self._save_proposal(outcome.save_proposal)
+        if outcome.save_direction is not None:
+            self._save_direction(outcome.save_direction)
         return tuple(failed)
 
     def _report_dm_failures(self, failures, state) -> None:
@@ -284,7 +287,11 @@ class Gateway:
         """
         self.store.mutate_raw(PROPOSALS, lambda items: [*(items or []), payload], default=[])
 
-    # ---------- 慢路径：M1 / M3 ----------
+    def _save_direction(self, payload: dict) -> None:
+        """整份方向结果一次性覆盖（M2 落定，§2.6）—— 裸 JSON，口径同 proposals.json。"""
+        self.store.save_direction(payload)
+
+    # ---------- 慢路径：M1 / M2 / M3 ----------
 
     def run_pipeline(self, kind: str, inbound: Inbound, state: dict) -> None:
         """后台线程里跑。异常一律转成一句人话回群里（方案 §7：不能静默失败）。
@@ -297,6 +304,8 @@ class Gateway:
                 self._run_assignment(inbound, state)
             elif kind == "decompose":
                 self._run_decompose(inbound)
+            elif kind == "direction":
+                self._run_direction(inbound)
         except ExtractError as exc:
             self._send(reply(inbound, replies.EXTRACT_REJECTED.format(reason=exc)))
         except LLMError:
@@ -363,6 +372,39 @@ class Gateway:
         self._send(
             reply(inbound, render_checklist(meta, points, result.cards, result))
         )
+
+    def _run_direction(self, inbound: Inbound) -> None:
+        """「方向」：评分点 → 2–3 个候选（M2 唯一的 LLM 点）→ 开投票窗口发群（§2.2）。
+
+        前置缺哪个就回哪句、不发候选：与 router 的判定口径一致（必修 4）。
+        开窗时**重新读一次 state**（生成要花十几秒），别拿十几秒前的快照覆盖回盘 ——
+        不然这期间别人刚建的花名册 / 窗口会被一起写没。
+        """
+        points = self.store.load_rubric()
+        if not points:
+            # D-48 口径：没有评分点就不生成，不烧 token
+            self._send(reply(inbound, replies.NEEDS_RUBRIC))
+            return
+        roster = self.store.load_members()
+        if roster is None or not roster.members:
+            self._send(reply(inbound, replies.VOTE_NEED_ROSTER))
+            return
+        try:
+            result = generate_directions(points, self.store.load_assignment(), self._llm())
+        except LLMError:
+            # 生成不出来就直说，别让群里干等（也不套用「作业书解析失败」那句不对路的兜底）
+            self._send(reply(inbound, replies.VOTE_GENERATE_FAILED))
+            return
+        if not result.ok:
+            self._send(reply(inbound, replies.VOTE_GENERATE_FAILED))
+            return
+        outcome = vote.open_window(
+            inbound,
+            self.store.load_state(),
+            [direction.to_dict() for direction in result.directions],
+        )
+        failures = self._deliver(outcome)
+        self._report_dm_failures(failures, outcome.state or {})
 
     def _forget_pending_file(self, file_message_id: str) -> None:
         """只清**这一轮消费掉的那个文件**（按 message_id 认）。

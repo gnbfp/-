@@ -18,8 +18,18 @@ __all__ = [
     "DECOMPOSING",
     "NEEDS_RUBRIC",
     "NO_RUBRIC_FOUND",
-    "PLACEHOLDER_DIRECTION",
-    "PLACEHOLDER_VOTE",
+    "VOTE_GENERATING",
+    "VOTE_NEED_GROUP",
+    "VOTE_NEED_ROSTER",
+    "VOTE_IN_PROGRESS",
+    "VOTE_CANDIDATES",
+    "VOTE_ACK",
+    "VOTE_BAD",
+    "VOTE_TIMEOUT",
+    "VOTE_SETTLED",
+    "VOTE_SEAL_NEED_PICK",
+    "VOTE_NEED_LEADER",
+    "VOTE_GENERATE_FAILED",
     "PLACEHOLDER_COMPLETE",
     "PREFERENCE_LIST",
     "PREFERENCE_SAVED",
@@ -47,7 +57,7 @@ COMMAND_LIST_TEXT = (
     "我只会这几件事：\n"
     "1. 作业书 —— 先发作业书文件，再回复「作业书」，我抽评分点并拆任务卡\n"
     "2. 拆解 —— 用现有评分点重跑一次任务拆解\n"
-    "3. 方向 —— 生成 2–3 个候选选题方向（开发中）\n"
+    "3. 方向 —— 群里发这句，我生成 2–3 个候选选题方向并开投票\n"
     "4. 你想做哪一块 —— 私聊我发这句，填志愿\n"
     "5. 我想提议：… —— 私聊我发这句，我匿名转达\n"
     "6. 完成 T3 —— 私聊我发这句，标记任务完成（开发中）\n"
@@ -68,9 +78,32 @@ NO_RUBRIC_FOUND = (
     "为了不瞎拆，我先停在这里 —— 请确认作业书里有没有评分标准，或换一份带评分标准的文件。"
 )
 
+# ---- M2 方向候选 + 群内投票（§7.1 / §7.6 / D-35 / D-36）----
+VOTE_GENERATING = "收到，正在按评分点生成候选方向，大概需要半分钟…"
+VOTE_NEED_GROUP = "投票是群里的动作：请到群里发「方向」。"
+VOTE_NEED_ROSTER = "还没有花名册：先在群里发「登记」建一份，再发「方向」。"
+VOTE_IN_PROGRESS = "方向投票正在进行：还剩 {minutes} 分钟，回复数字投票就行。"
+# 候选文案里这句"仅供参考，由全组拍板"是 §7 验收项，别删。
+VOTE_CANDIDATES = (
+    "候选方向（仅供参考，由全组拍板）：\n"
+    "{items}\n\n"
+    "回复数字投票（一人一票，可以改）；10 分钟内过半就定。"
+)
+VOTE_ACK = "记下了：你投的是 {id}. {title}。想改就再发一次数字。"
+VOTE_BAD = "没看懂：候选只有 {ids}，回复其中一个数字就行。"
+# 超时窗口是**关掉**的（§2.4 条 2），所以要告诉组长"重开一次方向"再封盘 ——
+# 否则回「组长发「封盘」」会比实际行为多一步，现场会卡住。
+VOTE_TIMEOUT = (
+    "10 分钟到，还没有方向过半：{tally}。投票窗口先关掉。\n"
+    "组长要拍板：再发一次「方向」开个新窗口，然后发「封盘」取票最多的，"
+    "或「封盘 2」直接指定第 2 个。"
+)
+VOTE_SETTLED = "方向已定：{id}. {title}（{detail}）。"
+VOTE_SEAL_NEED_PICK = "现在还没有票：组长发「封盘 2」直接指定一个方向（数字是候选编号）。"
+VOTE_NEED_LEADER = "只有组长能封盘。"
+VOTE_GENERATE_FAILED = "候选方向没生成出来（模型输出不合要求），稍后再发一次「方向」。"
+
 # ---- 未接上的模块：只留入口，业务逻辑归各自 owner（方案 §12）----
-PLACEHOLDER_DIRECTION = "「方向」还没接上候选方向生成（M2 在 9/16 接）。现在可以先用「作业书」把任务卡拆出来。"
-PLACEHOLDER_VOTE = "投票还没接上（M2 在 9/16 接）：现在回复数字我还没法计票。"
 PLACEHOLDER_COMPLETE = "「完成 T3」还没接完成标记（M6 在 9/16 接）。"
 
 # ---- M4 志愿分配（§7.1 / D-52~D-54）----
