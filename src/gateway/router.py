@@ -121,22 +121,33 @@ def route(
         # 方向投票窗口（M2，D-35 / D-36）：只认开窗那个群的花名册成员；
         # **不命中一律回退 7 条前缀** —— 窗口开着时「拆解」「作业书」必须照常干活，
         # 不然就是一个吃掉指令的死锁窗口（必修 1 的同款病）。
+        # 超时收口（外审必修 A）：**任何**到达的消息都要把到期的窗口收口（发票数明细 +
+        # 冻住），不能只等"下一条数字"；但这条消息本身若是指令，收口之后**照常执行**，
+        # 不许被吞 —— 所以是"先收口、再照原路走一遍"，不是提前 return。
+        closing = (
+            vote.close_expired(inbound, state, roster, now) if vote.should_close(text) else None
+        )
+        if closing is not None:
+            state = closing.state            # 收口后的状态：冻住（或已过半落定清空）
         hit = vote.accept(text, inbound, state, roster, now)
         if hit is not None:
-            return hit
-        return _merge(
-            _by_prefix(
-                inbound,
+            return _with_closing(hit, closing)
+        return _with_closing(
+            _merge(
+                _by_prefix(
+                    inbound,
+                    state,
+                    roster,
+                    has_rubric=has_rubric,
+                    cards=cards,
+                    preferences=preferences,
+                    now=now,
+                    source_title=source_title,
+                ),
                 state,
-                roster,
-                has_rubric=has_rubric,
-                cards=cards,
-                preferences=preferences,
-                now=now,
-                source_title=source_title,
+                original,
             ),
-            state,
-            original,
+            closing,
         )
     if awaiting == "preference":
         # 志愿窗口（5 小时，D-52~D-54）：过期就当场结算，没过期就试收志愿；
@@ -227,6 +238,22 @@ def _merge(outcome: Outcome, state: dict, original: dict) -> Outcome:
     if state is original or outcome.state is not None:
         return outcome
     return replace(outcome, state=state)
+
+
+def _with_closing(outcome: Outcome, closing: Outcome | None) -> Outcome:
+    """把"超时收口"的结果并进这条消息本来该有的结果里（外审必修 A）。
+
+    明细 / 落定**排在这条消息的回复之前**（先交代窗口到期，再回答它问的事）；
+    ``state`` 以收口后的为准（冻住 / 已清空），``save_direction`` 只有落定那条路才有。
+    """
+    if closing is None:
+        return outcome
+    return replace(
+        outcome,
+        replies=(*closing.replies, *outcome.replies),
+        state=outcome.state if outcome.state is not None else closing.state,
+        save_direction=outcome.save_direction or closing.save_direction,
+    )
 
 
 def _proposal(text: str, inbound: Inbound, state: dict, now: datetime | None = None) -> Outcome:
