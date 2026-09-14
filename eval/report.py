@@ -26,6 +26,7 @@ __all__ = [
     "BaselineError",
     "DocResult",
     "PASS_THRESHOLD",
+    "GATE_MIN_DOCS",
     "load_baseline",
     "load_runs",
     "compute",
@@ -33,6 +34,7 @@ __all__ = [
 ]
 
 PASS_THRESHOLD = 0.80          # 门③：逐份 ≥ 80% 且无 ⚠️（§4.4，工程默认）
+GATE_MIN_DOCS = 5              # 门③是"前 5 份作业书"的门（D-51），样本不足就不能认可门③（F6）
 
 _DOC_FIELDS = ("doc_id", "title", "source_file", "points")
 _POINT_FIELDS = ("order", "weight", "decomposable", "label")
@@ -206,10 +208,15 @@ def render(results: Sequence[DocResult], generated_at: str) -> str:
     passed = sum(1 for result in results if result.passing)
     total = len(results)
     average = sum(result.ratio for result in results) / total if total else 0.0
-    gate = "✅" if total and passed == total else "❌"
+    # 样本不足时只报子集成绩、**不打门③结论**：否则只跑 1 份也会印一个
+    # "D5 门③ ✅"，把子集误报成过门（F6）。
+    if total < GATE_MIN_DOCS:
+        verdict = f"样本不足（D5 门③ 要求 {GATE_MIN_DOCS} 份），只报子集成绩，不给门③结论"
+    else:
+        verdict = f"D5 门③ {'✅' if passed == total else '❌'}"
     lines += [
         "",
-        f"逐份判据（每份 ≥ {PASS_THRESHOLD:.0%} 且无 ⚠️）：**{passed}/{total} 通过** → D5 门③ {gate}",
+        f"逐份判据（每份 ≥ {PASS_THRESHOLD:.0%} 且无 ⚠️）：**{passed}/{total} 通过** → {verdict}",
         f"平均覆盖率：{average:.0%}｜循环口径与评测口径的分母差异见 `eval/report.py` 顶部 docstring",
         "",
         "## 明细",

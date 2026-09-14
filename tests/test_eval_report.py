@@ -209,3 +209,28 @@ def test_shipped_baselines_all_load():
         assert payload["doc_id"] == doc_id
         assert payload["points"]
 
+
+
+# ---------- 10. 门③ 不能用子集声称（F6）----------
+
+
+def _passing_result(doc_id="d0"):
+    baseline = _baseline([_point(1, 100)], doc_id=doc_id)
+    rubric = _rubric(("R1", "normal", 100))
+    return compute(baseline, rubric, [_card(refs=("R1",))])
+
+
+def test_single_doc_render_does_not_claim_the_gate():
+    """F6：样本不足（D5 要 5 份）时只报子集成绩，不打门③结论。"""
+    text = render([_passing_result()], "2026-09-13 00:00")
+    assert "1/1 通过" in text
+    assert "门③ ✅" not in text
+    assert "样本不足" in text
+
+
+def test_five_passing_docs_claim_the_gate():
+    """五份齐且全过 → 才能打门③ ✅（回归）。"""
+    results = [_passing_result(f"d{i}") for i in range(5)]
+    text = render(results, "2026-09-13 00:00")
+    assert "5/5 通过" in text
+    assert "D5 门③ ✅" in text

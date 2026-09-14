@@ -402,10 +402,12 @@ class Gateway:
             self._send(reply(inbound, replies.NO_RUBRIC_FOUND))
             return
 
+        # 三份产物必须**一起**落盘（F2）：M3 抛错时若 M1 的产物已经写下去，
+        # 盘上就会留下“新 rubric + 旧 cards”的混用快照，下一轮「拆解」会拿新评分点去配旧卡。
+        # 所以 decompose() 成功之后再一次性写完；失败就保持上一份快照不动。
+        result = decompose(parsed.points, self._llm())
         self.store.save_assignment(parsed.meta)
         self.store.save_rubric(list(parsed.points))
-
-        result = decompose(parsed.points, self._llm())
         self.store.save_cards(list(result.cards))
 
         report = render_checklist(parsed.meta, parsed.points, result.cards, result)
