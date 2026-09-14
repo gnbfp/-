@@ -93,14 +93,14 @@ def command(
         return Outcome(replies=(reply(inbound, replies.VOTE_NEED_GROUP),))
 
     block, expired = read_window(state, now)
-    if block and not expired:
-        # 窗口还在：不重新生成、不重置票（防有人顺手把票清空）
+    if block and not expired and not block.get("closed"):
+        # 窗口还在（且没被冻住）：不重新生成、不重置票（防有人顺手把票清空）
         return Outcome(
             replies=(
                 reply(inbound, replies.VOTE_IN_PROGRESS.format(minutes=_remaining(block, now))),
             )
         )
-    # 没窗口 / 窗口已过期 → 重新生成候选、开新窗口（§2.2）
+    # 没窗口 / 已过期 / 已冻住 → 重新生成候选、开新窗口（§2.2）
     return Outcome(replies=(reply(inbound, replies.VOTE_GENERATING),), pipeline="direction")
 
 
@@ -151,6 +151,9 @@ def accept(
 
     会话口径（§2.3）：投票只在**开窗那个群**里算数。私聊的裸数字交回前缀（照走兜底文案）；
     别的群的裸数字静默不计（§5 推荐 3）；指令（含中文）一律放行。
+
+    窗口被**冻住**（``vote.closed``，超时后）时：数字静默不计，**只有组长还能 ``封盘`` 拍板** ——
+    冻住就是为了让他在同一批候选、同一张票数表上落定，而不是被迫重开一轮。
     """
     block, expired = read_window(state, now)
     if not block:
@@ -166,12 +169,21 @@ def accept(
             return None                          # 指令 → 交回前缀
         return None if inbound.chat_type != "group" else Outcome()
 
+    if block.get("closed"):
+        # 已冻住的窗口（超时后，§7.1 / M2 复核 P1）：数字**静默不计**，但组长仍可在
+        # **同一批候选**上拍板 —— 冻住的目的就是别让他从头再生成一轮、编号对不上票数表。
+        if seal:
+            return _seal(stripped, inbound, state, block, roster, now, expired=True)
+        if numbers is None:
+            return None                          # 指令照常放行（「方向」会开新窗口）
+        return Outcome()                         # 数字：不计票、不刷屏
+
     if seal:
         return _seal(stripped, inbound, state, block, roster, now, expired=expired)
     if numbers is None:
         return None                              # 含中文（指令）→ 交回前缀；「方向」会重开窗
     if expired:
-        # 超时（D-35）：有人过半就落定，没人过半就报明细 + 当场关窗（§2.4 条 2）
+        # 超时（D-35）：有人过半就落定，没人过半就报明细 + **冻住窗口**（§2.4 条 2 / §7.1）
         return _timeout(inbound, state, block, roster, now)
 
     members = list(getattr(roster, "members", None) or ())
@@ -240,7 +252,12 @@ def _cast(
 def _timeout(
     inbound: Inbound, state: dict, block: dict, roster, now: datetime | None
 ) -> Outcome:
-    """超时到点：有人过半就落定，没人过半就报明细 + 关窗（不落盘）。"""
+    """超时到点：有人过半就落定；没人过半就报明细 + **冻住窗口**（不落盘）。
+
+    冻住 = ``vote.closed = true``（``awaiting`` 保持 ``"vote"``、候选与票数原样保留）：
+    数字不再计票，但组长还能在这**同一批候选**上 ``封盘`` / ``封盘 N`` 拍板（§7.1 的
+    "超时交组长拍板"）。清空窗口（``clear()``）只留给落定那条路。
+    """
     candidates = _candidates(block)
     votes = dict(block.get("votes") or {})
     winner = _majority_winner(votes, candidates, roster)
@@ -251,13 +268,14 @@ def _timeout(
         replies=(
             Reply(
                 chat_id=group,
-                text=replies.VOTE_TIMEOUT.format(
-                    tally=_render_tally(votes, candidates),
-                    ids=_render_ids(candidates),
-                ),
+                text=replies.VOTE_TIMEOUT.format(tally=_render_tally(votes, candidates)),
             ),
         ),
-        state=clear(state),
+        state={
+            **(state or {}),
+            "awaiting": "vote",
+            "vote": {**block, "closed": True},
+        },
     )
 
 

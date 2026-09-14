@@ -84,6 +84,13 @@ def _state(opened_at=OPEN, votes=None, awaiting="vote", group=GROUP):
     }
 
 
+def _frozen(votes=None):
+    """超时之后被**冻住**的窗口：``awaiting`` 还是 vote、候选与票数都还在。"""
+    state = _state(opened_at=OPEN - timedelta(minutes=11), votes=votes)
+    state["vote"]["closed"] = True
+    return state
+
+
 def _texts(outcome):
     return [r.text for r in outcome.replies]
 
@@ -246,22 +253,27 @@ def test_digits_after_settling_are_no_longer_votes():
 # ---------- 超时 10 分钟（§2.4 条 2）----------
 
 
-def test_timeout_boundary_closes_the_window():
+def test_timeout_boundary_freezes_the_window():
+    """恰好 10 分钟（``>=``）就到点；窗口是**冻住**，不是清空。"""
     state = _state(opened_at=OPEN - timedelta(minutes=10), votes={"ou_li": 1})
     outcome = route(_inbound("2"), state, _roster(), now=OPEN)
-    assert outcome.state["awaiting"] is None
+    assert outcome.state["awaiting"] == "vote"
+    assert outcome.state["vote"]["closed"] is True
     assert "10 分钟到" in _texts(outcome)[0]
 
 
-def test_timeout_without_a_majority_reports_the_tally_and_closes():
+def test_timeout_without_a_majority_freezes_the_window_and_reports_the_tally():
     state = _state(opened_at=OPEN - timedelta(minutes=11), votes={"ou_li": 1})
     outcome = route(_inbound("2"), state, _roster(), now=OPEN)
 
     text = _texts(outcome)[0]
     assert "10 分钟到" in text
     assert "1 号 1 票" in text                  # 含票数明细
-    assert outcome.state["awaiting"] is None
-    assert outcome.state["vote"] is None
+    assert "数字不再计票" in text
+    assert outcome.state["awaiting"] == "vote"  # 窗口没关，只是冻住
+    assert outcome.state["vote"]["closed"] is True
+    assert outcome.state["vote"]["votes"] == {"ou_li": 1}     # 票数原样保留
+    assert [c["id"] for c in outcome.state["vote"]["candidates"]] == [1, 2, 3]
     assert outcome.save_direction is None       # 没落定就不落盘
 
 
@@ -272,6 +284,69 @@ def test_timeout_with_a_majority_still_settles():
     outcome = route(_inbound("2"), state, _roster(), now=OPEN)
     assert outcome.save_direction["reason"] == "过半落定"
     assert outcome.state["awaiting"] is None
+
+
+# ---------- 冻住的窗口（M2 复核 P1）----------
+
+
+def test_frozen_window_ignores_digits_without_a_reply():
+    """冻住之后数字静默不计：票数不变、一个字都不回。"""
+    outcome = route(
+        _inbound("2", sender_open_id="ou_wang"), _frozen(votes={"ou_li": 1}), _roster(), now=OPEN
+    )
+    assert outcome == Outcome()
+
+
+def test_frozen_window_still_lets_commands_through():
+    outcome = route(
+        _inbound("拆解"), _frozen(votes={"ou_li": 1}), _roster(), has_rubric=True, now=OPEN
+    )
+    assert _texts(outcome) == [replies.DECOMPOSING]
+    assert outcome.pipeline == "decompose"
+
+
+def test_leader_seals_the_frozen_window_on_the_plurality():
+    """超时那条路的正解：组长在**同一批候选、同一张票数表**上拍板。"""
+    outcome = route(
+        _inbound("封盘", sender_open_id=LEADER),
+        _frozen(votes={"ou_li": 2, "ou_wang": 2}),
+        _roster(),
+        now=OPEN,
+    )
+    assert outcome.save_direction["winner"]["id"] == 2
+    assert outcome.save_direction["reason"] == "超时后组长指定"
+    assert outcome.save_direction["decided_by"] == "leader"
+    assert outcome.state["awaiting"] is None
+
+
+def test_leader_names_a_number_on_the_frozen_window():
+    outcome = route(
+        _inbound("封盘 2", sender_open_id=LEADER),
+        _frozen(votes={"ou_li": 1}),
+        _roster(),
+        now=OPEN,
+    )
+    assert outcome.save_direction["winner"]["id"] == 2
+    assert outcome.save_direction["reason"] == "超时后组长指定"
+    # 用的是**冻住的那批候选**，编号跟超时明细是同一张表
+    assert [c["id"] for c in outcome.save_direction["candidates"]] == [1, 2, 3]
+
+
+def test_non_leader_seal_on_the_frozen_window_is_still_refused():
+    outcome = route(
+        _inbound("封盘", sender_open_id="ou_li"), _frozen(votes={"ou_li": 2}), _roster(), now=OPEN
+    )
+    assert _texts(outcome) == [replies.VOTE_NEED_LEADER]
+    assert outcome.save_direction is None
+
+
+def test_direction_after_freezing_opens_a_new_window():
+    """冻住不算"还在投票"：再发「方向」应当开新窗口，而不是回"还剩 N 分钟"。"""
+    outcome = route(
+        _inbound("方向"), _frozen(votes={"ou_li": 1}), _roster(), has_rubric=True, now=OPEN
+    )
+    assert _texts(outcome) == [replies.VOTE_GENERATING]
+    assert outcome.pipeline == "direction"
 
 
 # ---------- 组长拍板（§2.5）----------
