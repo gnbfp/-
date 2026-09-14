@@ -5,7 +5,8 @@
   群里发「方向」→ 后台生成 2–3 个候选 → 候选发群 + 开投票窗口（``awaiting=vote``）
   → 组员在**开窗那个群**回裸数字 → 一人一票、后投覆盖
   → 关闭（**三条任一，只关一次**）：某方向"已投票者过半"且过门槛（D-35 / D-36）/
-    超时 10 分钟（``VOTE_TTL``）/ 组长「封盘」拍板
+    超时 10 分钟（``VOTE_TTL``，到期后**任何**到达的消息都会触发收口）/
+    组长「封盘」拍板
   → 落 ``data/direction.json`` + 群里报「方向已定」。
 
 三条口径：
@@ -38,6 +39,8 @@ __all__ = [
     "command",
     "open_window",
     "accept",
+    "should_close",
+    "close_expired",
     "settle",
     "clear",
 ]
@@ -154,6 +157,9 @@ def accept(
 
     窗口被**冻住**（``vote.closed``，超时后）时：数字静默不计，**只有组长还能 ``封盘`` 拍板** ——
     冻住就是为了让他在同一批候选、同一张票数表上落定，而不是被迫重开一轮。
+
+    超时收口本身在 ``close_expired()``：路由层**先收口、再照原路走一遍**，所以「拆解」
+    这种消息也能触发收口、**且照常执行**（外审必修 A；只把 ``if expired`` 提到前面会吃掉指令）。
     """
     block, expired = read_window(state, now)
     if not block:
@@ -198,6 +204,37 @@ def accept(
         )
     # 一人一票：一条消息里写多个数字时只认**第一个**（"1 2" 这种多半是手滑）
     return _cast(state, block, inbound, numbers[0], candidates, roster, now)
+
+
+def should_close(text: str) -> bool:
+    """这条消息要不要**顺手把到期的窗口收口**（外审必修 A）。
+
+    口径：**不是数字、也不是「封盘」** → 要收口。数字走 ``accept()`` 里既有的
+    ``_timeout()``（有人过半就落定、没人过半就冻住）、「封盘」走 ``_seal(expired=True)``；
+    剩下的（指令、闲聊）以前会被静默放过 —— 盘上仍是 ``awaiting="vote"``、``closed``
+    不写、那句票数明细也不发，"10 分钟自动报明细"实际退化成"得等下一条数字"。
+
+    只判"这条像不像数字 / 封盘"，**不判窗口在不在、过期没** —— 那是 ``close_expired()``
+    的事。这样切开，调用方才能"先收口、再照常处理这条消息本身"。
+    """
+    return _parse_numbers(text) is None and not _is_seal((text or "").strip())
+
+
+def close_expired(
+    inbound: Inbound, state: dict, roster, now: datetime | None = None
+) -> Outcome | None:
+    """超时到点就收口：报票数明细 + 冻结窗口（有人过半则直接落定）。
+
+    返回 ``None`` = 不用收口（没窗口 / 还没到点 / 已经冻住过）。**幂等**：收口过的窗口
+    ``closed = true``，再调也只返回 ``None``，不会重复发明细。
+
+    ⚠️ 调用方拿到收口结果后**仍要继续处理这条消息本身**：超时后第一条到达的消息很可能
+    就是「拆解」，"收口"与"不许吞掉指令"两条必须同时成立（外审必修 A）。
+    """
+    block, expired = read_window(state, now)
+    if not block or not expired or block.get("closed"):
+        return None
+    return _timeout(inbound, state, block, roster, now)
 
 
 def settle(

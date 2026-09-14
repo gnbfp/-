@@ -286,6 +286,48 @@ def test_timeout_with_a_majority_still_settles():
     assert outcome.state["awaiting"] is None
 
 
+# ---------- 超时收口：任何消息都收口，但指令不许被吞（外审必修 A）----------
+
+
+def test_timeout_is_closed_by_a_command_and_the_command_still_runs():
+    """超时后「拆解」：先发票数明细 + 冻住窗口，再把「拆解」照常执行（不许被吞）。"""
+    state = _state(opened_at=OPEN - timedelta(minutes=11), votes={"ou_li": 1})
+    outcome = route(_inbound("拆解"), state, _roster(), has_rubric=True, now=OPEN)
+
+    assert len(_texts(outcome)) == 2
+    assert "10 分钟到" in _texts(outcome)[0]           # 先收口：票数明细
+    assert _texts(outcome)[1] == replies.DECOMPOSING   # 再照常回「拆解」
+    assert outcome.pipeline == "decompose"             # ……也照常起重活
+    assert outcome.state["vote"]["closed"] is True     # 窗口冻住（不是清空）
+    assert outcome.state["vote"]["votes"] == {"ou_li": 1}
+    assert outcome.save_direction is None              # 没人过半 → 不落盘
+
+
+def test_timeout_is_closed_by_the_assignment_command_too():
+    """同一条口径换「作业书」：收口 + 主链路照常起（``pipeline=assignment``）。"""
+    state = _state(opened_at=OPEN - timedelta(minutes=11))
+    state["pending_file"] = {
+        "file_key": "fk1",
+        "file_name": "a.pdf",
+        "resource_type": "file",
+        "chat_id": GROUP,
+        "message_id": "mf1",
+        "received_at": OPEN.isoformat(timespec="seconds"),
+    }
+    outcome = route(_inbound("作业书"), state, _roster(), now=OPEN)
+
+    assert "10 分钟到" in _texts(outcome)[0]
+    assert outcome.pipeline == "assignment"
+    assert outcome.state["vote"]["closed"] is True
+
+
+def test_timeout_with_an_empty_message_stays_silent():
+    """纯 @ 段 / 空文本不算"到达的消息"：不发明细、不崩、什么都不动。"""
+    state = _state(opened_at=OPEN - timedelta(minutes=11), votes={"ou_li": 1})
+    assert route(_inbound("@_user_1"), state, _roster(), now=OPEN) == Outcome()
+    assert route(_inbound("   "), state, _roster(), now=OPEN) == Outcome()
+
+
 # ---------- 冻住的窗口（M2 复核 P1）----------
 
 
@@ -441,4 +483,11 @@ def test_preference_window_clears_vote_residue():
         _inbound("你想做哪一块"), state, _roster(), cards=_cards(), now=OPEN
     )
     assert outcome.state["awaiting"] == "preference"
+    assert outcome.state["vote"] is None
+
+
+def test_register_begin_clears_vote_residue():
+    """「登记」也要清掉投票窗口残留（P0-D 的另一半；反向见 preference.open_window）。"""
+    outcome = route(_inbound("登记"), _state(), _roster(), now=OPEN)
+    assert outcome.state["awaiting"] == "register"
     assert outcome.state["vote"] is None

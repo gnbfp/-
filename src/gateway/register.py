@@ -48,6 +48,7 @@ def register_begin(inbound: Inbound, state: dict, now: datetime | None = None) -
         **(state or {}),
         "awaiting": "register",
         "preference": None,          # 切状态机要清掉旧志愿窗口（P0-D）
+        "vote": None,                # 也清掉投票窗口（外审必修 B；反向见 preference.open_window）
         "register": {
             "stage": "collect",
             "initiator_open_id": inbound.sender_open_id,
@@ -270,8 +271,9 @@ def _expired(block: dict, now: datetime | None) -> bool:
 
 
 def _cleared(state: dict) -> dict:
-    # 登记窗口退出 / 作废时，一并清掉可能残留的志愿窗口（P0-D）
-    return {**(state or {}), "awaiting": None, "register": None, "preference": None}
+    # 登记窗口退出 / 作废时，一并清掉可能残留的志愿 / 投票窗口（P0-D / 外审必修 B）：
+    # 三个状态机都吃裸数字，谁残留都会把别人的数字吃掉
+    return {**(state or {}), "awaiting": None, "register": None, "preference": None, "vote": None}
 
 
 def _iso(moment: datetime) -> str:
