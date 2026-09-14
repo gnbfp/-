@@ -401,7 +401,15 @@ def _settled(
 
 
 def _majority_winner(votes: dict, candidates: list, roster) -> int | None:
-    """"已投票者过半 + 过门槛"的赢家；不成立返回 ``None``（D-35 / D-36）。"""
+    """"已投票者过半 + 过门槛"的赢家；不成立返回 ``None``（D-35 / D-36）。
+
+    **名单不在就永不落定**（外审 3 必修 D）：``_threshold()`` 在空名单上返回 1、
+    ``accept()`` 的成员判断又会被空名单整个跳过 —— 两处叠加 = 没有花名册时
+    陌生人一票就"过半定方向"。落定是不可逆动作，所以在这里一律 fail-closed。
+    """
+    members = list(getattr(roster, "members", None) or ())
+    if not members:
+        return None      # 名单不在 = 不判"过半"（票照记、明细照报，但绝不落定）
     tally = _tally(votes, candidates)
     if not tally:
         return None

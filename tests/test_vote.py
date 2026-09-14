@@ -170,6 +170,40 @@ def test_stranger_digit_is_ignored_silently():
     assert outcome == Outcome()                 # 不记、不回话、不报错
 
 
+def test_without_a_roster_nobody_can_settle_the_direction():
+    """必修 D：没有花名册时一律 fail-closed —— 票照记，但谁也不许"过半定方向"。"""
+    state = _state()
+    outcome = route(_inbound("2", sender_open_id="ou_stranger"), state, None, now=OPEN)
+
+    assert outcome.save_direction is None                        # 不落定（不管是谁投的）
+    assert outcome.state["vote"]["votes"] == {"ou_stranger": 2}   # 票照记（留痕）
+    assert outcome.state["awaiting"] == "vote"                    # 窗口还在
+    assert outcome.state["vote"].get("closed") is None
+
+    # 超时那条路也一样：明细照报，但没人能"过半" → 冻住窗口、不落盘
+    timed_out = route(
+        _inbound("3"),
+        _state(opened_at=OPEN - timedelta(minutes=11), votes={"ou_stranger": 2}),
+        None,
+        now=OPEN,
+    )
+    assert "10 分钟到" in _texts(timed_out)[0]
+    assert timed_out.save_direction is None
+    assert timed_out.state["vote"]["closed"] is True
+
+
+def test_a_stranger_cannot_push_the_direction_over_the_line():
+    """有花名册时非成员静默不计：**这票既不记、也不参与过半**（必修 D 的对照）。"""
+    outcome = route(
+        _inbound("1", sender_open_id="ou_stranger"),
+        _state(votes={"ou_li": 1}),          # 只有 1 个成员投过（门槛 2 人）
+        _roster(),
+        now=OPEN,
+    )
+    assert outcome == Outcome()              # 不记、不回话、不写 state
+    assert outcome.save_direction is None
+
+
 def test_private_digit_is_not_a_vote_and_falls_through_to_the_prefixes():
     outcome = route(_private("2"), _state(), _roster(), now=OPEN)
     assert outcome.state is None

@@ -235,7 +235,10 @@ class Gateway:
     def _report_dm_failures(self, failures, state) -> None:
         """私聊发不出去就在群里补一句（P0-C）。只统计 ``open_id`` 目标 —— 那才是"人"。"""
         dm_failed = [r for r in failures if r.receive_id_type == "open_id"]
-        group = (state or {}).get("group_chat_id") or ""
+        # 群取**志愿窗口自己记的** chat_id（P1-H），取不到再退回 state.group_chat_id ——
+        # 同 settle()：窗口开着时只要有别的群来一条消息，group_chat_id 就会被刷成那个群
+        pref = (state or {}).get("preference") or {}
+        group = pref.get("chat_id") or (state or {}).get("group_chat_id") or ""
         if not dm_failed or not group:
             return
         self._send(
