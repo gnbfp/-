@@ -1,7 +1,14 @@
 """M7 简版核对清单渲染的单测（§7.2 展示口径与判定口径一致）。"""
 
 from src.intelligence.decompose import DecomposeResult
-from src.models import AssignmentMeta, RubricPoint, TaskCard
+from src.models import (
+    AssignmentMeta,
+    AssignmentRecord,
+    Member,
+    Roster,
+    RubricPoint,
+    TaskCard,
+)
 from src.report.checklist import render_checklist
 
 META = AssignmentMeta(
@@ -92,3 +99,39 @@ def test_checklist_shows_unlabeled_when_deadline_empty():
     result = DecomposeResult(cards=(), failures=(), generations=0)
     text = render_checklist(meta, _points(), [], result)
     assert "截止：未标注" in text
+
+
+def _roster():
+    return Roster(
+        leader="ou_a",
+        members=[Member(open_id="ou_a", name="张三"), Member(open_id="ou_b", name="李四")],
+        registered_at="2026-09-14T09:00:00",
+        confirmed_by="ou_a",
+    )
+
+
+def test_report_columns_are_owner_and_completion_not_coverage():
+    """M7：执行阶段的「负责人 + 完成」是**另一回事**，不能和覆盖的 [x]/[ ] 混。"""
+    points = _points()
+    cards = [_card("T1", ["R1"]), _card("T2", ["R2"])]
+    result = DecomposeResult(cards=tuple(cards), failures=(), generations=0)
+    assignments = [
+        AssignmentRecord("T1", "ou_a", "volunteer_1", "2026-09-14T09:00:00"),
+        AssignmentRecord("T2", "ou_b", "auto"),
+    ]
+    text = render_checklist(
+        META, points, cards, result, assignments=assignments, roster=_roster()
+    )
+    assert "[x] R1（40）→ T1 ｜负责人：张三 ｜完成 1/1" in text
+    assert "[x] R2（30）→ T2 ｜负责人：李四 ｜完成 0/1" in text
+    assert "[?] R3（30）需组长确认（模糊要求，未进循环分母） ｜负责人：— ｜完成 —" in text
+    assert "覆盖率：2/2 = 100%" in text          # 执行列不污染覆盖率口径
+    assert "生成" not in text                    # 报告是快照，没有"拆了几轮"
+
+
+def test_without_assignments_the_old_output_is_unchanged():
+    points = _points()
+    cards = [_card("T1", ["R1"])]
+    result = DecomposeResult(cards=tuple(cards), failures=(), generations=2)
+    text = render_checklist(META, points, cards, result)
+    assert "负责人" not in text and "完成 " not in text

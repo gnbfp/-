@@ -1,7 +1,7 @@
 """M4 分配算法单测（S6 / S7 / S8、§2.4 / §2.5）。纯函数：不碰飞书、不碰网络、零 LLM。"""
 
 from src.gateway.allocation import allocate, render_board, render_task_list
-from src.models import Member, Preference, Roster, TaskCard
+from src.models import AssignmentRecord, Member, Preference, Roster, TaskCard
 
 PEOPLE = (("ou_a", "张三"), ("ou_b", "李四"), ("ou_c", "王五"))
 
@@ -201,3 +201,20 @@ def test_board_without_preferences_omits_the_missing_line():
     roster = _roster(2)
     board = render_board(allocate(cards, roster, []), cards, roster)
     assert "未交志愿" not in board
+
+
+def test_board_can_show_completion_on_demand():
+    """M7：``show_completion=True`` 才多出"完成/未完成"（默认输出一个字不变）。"""
+    cards = [_card("T1"), _card("T2")]
+    roster = _roster(2)
+    assignments = [
+        AssignmentRecord("T1", "ou_a", "volunteer_1", "2026-09-14T09:00:00"),
+        AssignmentRecord("T2", "ou_b", "auto"),
+    ]
+    board = render_board(assignments, cards, roster, show_completion=True)
+    assert "张三 → T1（第一志愿·已完成）" in board
+    assert "李四 → T2（兜底·未完成）" in board
+    assert "完成 1/2 张" in board
+
+    plain = render_board(assignments, cards, roster)
+    assert "已完成" not in plain and "完成 1/2 张" not in plain

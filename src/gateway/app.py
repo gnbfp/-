@@ -17,16 +17,18 @@ import os
 import socket
 import sys
 import threading
+import time
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
 from src.config import ConfigError, load_config
-from src.gateway import replies, vote
+from src.gateway import allocation, reminder, replies, vote
 from src.gateway.client import FeishuClient
-from src.gateway.events import Inbound, Outcome, Reply, reply, to_inbound
+from src.gateway.events import ImageOut, Inbound, Outcome, Reply, reply, to_inbound
 from src.gateway.router import route
 from src.intelligence.coverage import coverage_loop
-from src.intelligence.decompose import decompose
+from src.intelligence.decompose import DecomposeResult, check, decompose
 from src.intelligence.direction import generate_directions
 from src.intelligence.extract import (
     ExtractError,
@@ -39,7 +41,17 @@ from src.intelligence.llm import LLMClient, LLMError
 from src.intelligence.parse import parse_assignment
 from src.models import AssignmentRecord, Preference, Roster
 from src.report.checklist import render_checklist
-from src.storage import PREFERENCES, PROPOSALS, SEEN, JsonStore
+from src.report.gantt import render_gantt
+from src.storage import (
+    ASSIGNMENTS,
+    GANTT,
+    PREFERENCES,
+    PROPOSALS,
+    REMINDERS,
+    REPORT,
+    SEEN,
+    JsonStore,
+)
 
 __all__ = ["Gateway", "main"]
 
@@ -165,6 +177,7 @@ class Gateway:
             has_rubric=has_rubric,
             cards=self.store.load_cards(),
             preferences=self.store.load_preferences(),
+            assignments=self.store.load_assignments(),
             source_title=meta.title if meta else "",
         )
         failures = self._deliver(outcome)
@@ -230,6 +243,10 @@ class Gateway:
             self._save_proposal(outcome.save_proposal)
         if outcome.save_direction is not None:
             self._save_direction(outcome.save_direction)
+        if outcome.save_complete is not None:
+            self._save_complete(outcome.save_complete)
+        for image in outcome.images:                 # M7 甘特图：文本先发、图后发
+            self._send_image(image)
         return tuple(failed)
 
     def _report_dm_failures(self, failures, state) -> None:
@@ -294,6 +311,41 @@ class Gateway:
         """整份方向结果一次性覆盖（M2 落定，§2.6）—— 裸 JSON，口径同 proposals.json。"""
         self.store.save_direction(payload)
 
+    def _save_complete(self, payload: dict) -> None:
+        """M6 的完成标记（§2.1）：走 ``mutate_many`` **只改那一条**，其余原样。
+
+        两件事都写进 ``assignments.json`` 的同一行，所以必须走那个"类型化列表的原子
+        读-改-写"原语 —— 直接整份覆盖会把别人刚标的完成擦掉。
+        """
+        task_id = payload.get("task_id")
+        completed_at = payload.get("completed_at")
+        self.store.mutate_many(
+            ASSIGNMENTS,
+            AssignmentRecord,
+            lambda items: [
+                replace(record, completed_at=completed_at)
+                if record.task_id == task_id
+                else record
+                for record in items
+            ],
+        )
+
+    def _send_image(self, image: ImageOut):
+        """发一张图并打一行轨迹（P1-J）。返回 ``None`` = 成功，否则返回异常。"""
+        try:
+            self.sender.send_image(image.chat_id, image.path, image.receive_id_type)
+        except Exception as exc:
+            print(
+                f"[M0] {_stamp()} -> {image.receive_id_type}:{image.chat_id} "
+                f"图片失败({type(exc).__name__}) | {image.path}"
+            )
+            return exc
+        print(
+            f"[M0] {_stamp()} -> {image.receive_id_type}:{image.chat_id} "
+            f"图片 ok | {image.path}"
+        )
+        return None
+
     # ---------- 慢路径：M1 / M2 / M3 ----------
 
     def run_pipeline(self, kind: str, inbound: Inbound, state: dict) -> None:
@@ -309,6 +361,8 @@ class Gateway:
                 self._run_decompose(inbound)
             elif kind == "direction":
                 self._run_direction(inbound)
+            elif kind == "report":
+                self._run_report(inbound)
         except ExtractError as exc:
             self._send(reply(inbound, replies.EXTRACT_REJECTED.format(reason=exc)))
         except LLMError:
@@ -409,6 +463,53 @@ class Gateway:
         failures = self._deliver(outcome)
         self._report_dm_failures(failures, outcome.state or {})
 
+    def _run_report(self, inbound: Inbound) -> None:
+        """M7 执行报告（D-64 / D-65）：分配总表 + 核对清单 + 甘特图，发群。
+
+        报告是**从盘上重读的快照**：自检项按现状重算（``generations=0`` —— 报告不是拆解，
+        没有"这一版拆了几轮"这回事）。文本落 ``data/report.md``、图落 ``data/gantt.png``。
+        """
+        meta = self.store.load_assignment()
+        points = self.store.load_rubric()
+        cards = self.store.load_cards()
+        assignments = self.store.load_assignments()
+        roster = self.store.load_members()
+        if meta is None or not points or not cards or not assignments:
+            self._send(reply(inbound, replies.REPORT_NEED_ASSIGNMENTS))
+            return
+        result = DecomposeResult(
+            cards=tuple(cards), failures=tuple(check(cards, points)), generations=0
+        )
+        try:
+            gantt = render_gantt(cards, assignments, meta, self.store.path(GANTT), roster)
+        except Exception as exc:                     # 渲染崩了也要说话（方案 §7）
+            print(f"[M0] {_stamp()} 甘特图渲染失败：{type(exc).__name__}: {exc}", file=sys.stderr)
+            self._send(reply(inbound, replies.REPORT_FAILED))
+            return
+
+        text = "\n".join(
+            [
+                allocation.render_board(
+                    assignments,
+                    cards,
+                    roster,
+                    self.store.load_preferences(),
+                    show_completion=True,
+                ),
+                "",
+                render_checklist(
+                    meta, points, cards, result, assignments=assignments, roster=roster
+                ),
+            ]
+        )
+        self.store.path(REPORT).write_text(text + "\n", encoding="utf-8")
+        self._deliver(
+            Outcome(
+                replies=(Reply(chat_id=inbound.chat_id, text=text),),
+                images=(ImageOut(chat_id=inbound.chat_id, path=str(gantt)),),
+            )
+        )
+
     def _forget_pending_file(self, file_message_id: str) -> None:
         """只清**这一轮消费掉的那个文件**（按 message_id 认）。
 
@@ -422,6 +523,51 @@ class Gateway:
             return
         state.pop("pending_file", None)
         self.store.save_state(state)
+
+    # ---------- 慢路径的定时器：M6 催办 ----------
+
+    def scan_reminders(self, now: datetime | None = None) -> list:
+        """M6 临期扫描一轮（§2.2）：发群 @负责人，成败都记 ``data/reminders.json``。
+
+        群取 ``state.group_chat_id``（单群假设 D-57）；取不到就跳过并打一行日志 ——
+        **宁可漏催，不可把 @ 发到错误的群**。去重靠 ``(task_id, tier)``（见 ``reminder.scan``）。
+        """
+        group = (self.store.load_state() or {}).get("group_chat_id") or ""
+        if not group:
+            print(f"[M6] {_stamp()} 催办跳过：还不知道群是哪个（先让群里有人说句话）")
+            return []
+        _, tier1, tier2 = reminder.settings()
+        due = reminder.scan(
+            self.store.load_cards(),
+            self.store.load_assignments(),
+            self.store.load_assignment(),
+            self.store.read_raw(REMINDERS, []) or [],
+            now,
+            tier1_hours=tier1,
+            tier2_hours=tier2,
+        )
+        for item in due:
+            ok = self._send(Reply(chat_id=group, text=item.text)) is None
+            record = item.to_record(group, _stamp(), ok)
+            self.store.mutate_raw(
+                REMINDERS, lambda items, row=record: [*(items or []), row], default=[]
+            )
+        return due
+
+    def start_reminder_loop(self) -> None:
+        """后台线程：**启动先扫一次**（演示不必干等一个钟头），之后按间隔循环（§2.2）。"""
+        interval, _, _ = reminder.settings()
+
+        def _loop() -> None:
+            while True:
+                try:
+                    self.scan_reminders()
+                except Exception as exc:             # 扫一轮出错不能把线程搞死
+                    print(f"[M6] {_stamp()} 催办扫描出错：{type(exc).__name__}: {exc}")
+
+                time.sleep(interval)
+
+        threading.Thread(target=_loop, daemon=True).start()
 
     def _llm(self) -> LLMClient:
         if self._llm_client is None:
@@ -467,6 +613,7 @@ def main(argv=None) -> int:
             client_kwargs["log_level"] = lark.LogLevel.WARNING
         client = FeishuClient(config, **client_kwargs)
         gateway = Gateway(config, store, sender=client, downloader=client)
+        gateway.start_reminder_loop()
 
         print("[M0] 正在建立长连接（首次加载 SDK 约 20 秒，属正常）", file=sys.stderr)
         print("     测试群里 @机器人 发「拆解」即可开始；Ctrl+C 退出", file=sys.stderr)

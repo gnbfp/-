@@ -43,6 +43,9 @@ __all__ = [
     "STATE",
     "SEEN",
     "UPLOADS",
+    "REMINDERS",
+    "REPORT",
+    "GANTT",
 ]
 
 # 文件名对照 docs/ARCHITECTURE.md §4
@@ -57,6 +60,11 @@ DIRECTION = "direction.json"
 MEMBERS = "members.json"
 STATE = "state.json"
 SEEN = "seen.json"        # P0-A 事件去重（最近 200 条 message_id）
+# M6 催办去重（§2.2 / D-66）：同 (task_id, tier) 只发一次。字段集见 D-66。
+REMINDERS = "reminders.json"
+# M7 执行报告的两份产物（§3.4）：文本存档 + 甘特图 PNG。都是**产物**、不是数据模型。
+REPORT = "report.md"
+GANTT = "gantt.png"
 UPLOADS = "uploads"
 
 # 进程级锁：单进程（B1）⇒ 全局唯一落盘 ⇒ 一把锁就够

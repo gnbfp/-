@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from src.gateway import replies
 from src.gateway.events import Inbound, Outcome
 from src.gateway.router import route
-from src.models import Member, Preference, Roster, TaskCard
+from src.models import AssignmentRecord, Member, Preference, Roster, TaskCard
 
 OPEN = datetime(2026, 9, 13, 9, 0, 0)
 GROUP = "c_group"
@@ -136,9 +136,16 @@ def test_group_digits_are_not_preferences():
 
 def test_open_window_does_not_eat_private_commands():
     """窗口长达 5 小时：私聊里的其它指令必须照常能用。"""
-    common = dict(roster=_roster(), cards=_cards(), preferences=[], now=OPEN)
+    common = dict(
+        roster=_roster(),
+        cards=_cards(),
+        preferences=[],
+        assignments=[AssignmentRecord("T3", "ou_li", "volunteer_1")],
+        now=OPEN,
+    )
+    # 「完成 T3」照常进 M6（这里是"窗口不吃私聊指令"的回归点，不是 M6 本身的断言）
     assert _texts(route(_private("完成 T3"), _state(), **common)) == [
-        replies.PLACEHOLDER_COMPLETE
+        replies.COMPLETE_OK.format(task_id="T3", module="模块3")
     ]
     assert _texts(route(_private("作业书"), _state(), **common)) == [replies.FILE_MISSING]
     assert _texts(route(_private("我想提议：加个图表"), _state(), **common)) == [

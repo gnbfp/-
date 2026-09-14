@@ -14,7 +14,8 @@ M0 网关方案 §4 / §5 / §6 / §7。
 
 两条文档没写死、按方案 §4 的工程默认（可推翻）落地：
   * 「我想提议」全角 ``：`` 与半角 ``:`` 都认（中文输入法容易出半角）；
-  * 「完成 T3」用 ``^完成\\s*[Tt]\\d+``，容忍空格与大小写。
+  * 「完成 T3」用 ``^完成\\s*[Tt](\\d+)\\s*$``：容忍空格与大小写，但**整句必须就是这条指令**
+    （要捕获编号给 M6 用；"完成 T3 谢谢" 之类落到指令列表，不猜）。
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import Sequence
 
-from src.gateway import preference, register, replies, vote
+from src.gateway import complete, preference, register, replies, vote
 from src.gateway.events import Inbound, Mention, Outcome, Reply, reply
 
 __all__ = [
@@ -38,7 +39,7 @@ __all__ = [
 
 # 7 条前缀里两条带变体：提议的冒号全半角、完成的 Tn 容忍空格与大小写。
 PROPOSAL_PREFIXES = ("我想提议：", "我想提议:")
-COMPLETE_PATTERN = re.compile(r"^完成\s*[Tt]\d+")
+COMPLETE_PATTERN = re.compile(r"^完成\s*[Tt](\d+)\s*$")
 
 _MENTION_PLACEHOLDER = re.compile(r"@_user_\d+")
 
@@ -68,6 +69,7 @@ def route(
     has_rubric: bool = False,
     cards: Sequence = (),
     preferences: Sequence = (),
+    assignments: Sequence = (),
     now: datetime | None = None,
     source_title: str = "",
 ) -> Outcome:
@@ -141,6 +143,7 @@ def route(
                     has_rubric=has_rubric,
                     cards=cards,
                     preferences=preferences,
+                    assignments=assignments,
                     now=now,
                     source_title=source_title,
                 ),
@@ -170,6 +173,7 @@ def route(
                 has_rubric=has_rubric,
                 cards=cards,
                 preferences=preferences,
+                assignments=assignments,
                 now=now,
                 source_title=source_title,
             ),
@@ -184,6 +188,7 @@ def route(
         has_rubric=has_rubric,
         cards=cards,
         preferences=preferences,
+        assignments=assignments,
         now=now,
         source_title=source_title,
     )
@@ -197,10 +202,11 @@ def _by_prefix(
     has_rubric: bool = False,
     cards: Sequence = (),
     preferences: Sequence = (),
+    assignments: Sequence = (),
     now: datetime | None = None,
     source_title: str = "",
 ) -> Outcome:
-    """D-33 的第 3、4 步：7 条前缀精确匹配 → 都不中就是指令列表（T01）。"""
+    """D-33 的第 3、4 步：8 条前缀精确匹配 → 都不中就是指令列表（T01）。"""
     text = strip_mentions(inbound.text, inbound.mentions).strip()
 
     if text.startswith("作业书"):
@@ -220,12 +226,34 @@ def _by_prefix(
         )
     if any(text.startswith(prefix) for prefix in PROPOSAL_PREFIXES):
         return _proposal(text, inbound, state, now)
-    if COMPLETE_PATTERN.match(text):
-        return Outcome(replies=(reply(inbound, replies.PLACEHOLDER_COMPLETE),))
+    match = COMPLETE_PATTERN.match(text)
+    if match:
+        # 编号由 router 捕获（判定只有一处），剩下的"是不是你的卡 / 标没标过"归 M6
+        return complete.accept(match.group(1), inbound, assignments, cards, now)
     if text.startswith("登记"):
         return register.register_begin(inbound, state, now)
+    if text.startswith("报告"):
+        # M7 触发点 = 方案 A（D-64）：只有组长能在群里要报告
+        return _report(inbound, roster, assignments)
 
     return Outcome(replies=(reply(inbound, replies.COMMAND_LIST_TEXT),))
+
+
+def _report(inbound: Inbound, roster, assignments: Sequence) -> Outcome:
+    """M7 执行报告（D-64）—— **只认组长、只认群里**。
+
+    这里只判"能不能起"，真正生成三件套 + 甘特图是后台重活（``pipeline="report"``）；
+    两者同源，不会出现"回了「只有组长能要报告」却照样跑一轮"（必修 4 的口径）。
+    """
+    if inbound.chat_type != "group":
+        return Outcome(replies=(reply(inbound, replies.REPORT_NEED_GROUP),))
+    if roster is None or not getattr(roster, "members", None):
+        return Outcome(replies=(reply(inbound, replies.REPORT_NEED_ROSTER),))
+    if not inbound.sender_open_id or inbound.sender_open_id != roster.leader:
+        return Outcome(replies=(reply(inbound, replies.REPORT_NEED_LEADER),))
+    if not assignments:
+        return Outcome(replies=(reply(inbound, replies.REPORT_NEED_ASSIGNMENTS),))
+    return Outcome(replies=(reply(inbound, replies.REPORT_GENERATING),), pipeline="report")
 
 
 def _merge(outcome: Outcome, state: dict, original: dict) -> Outcome:

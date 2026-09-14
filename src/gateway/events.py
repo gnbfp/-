@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
-__all__ = ["Mention", "Inbound", "Reply", "Outcome", "reply", "to_inbound"]
+__all__ = ["Mention", "Inbound", "Reply", "ImageOut", "Outcome", "reply", "to_inbound"]
 
 
 # 消息类型 -> 内容里的资源字段名。与 tools/probe_feishu.py 的实测口径一致。
@@ -68,6 +68,19 @@ class Reply:
 
 
 @dataclass(frozen=True)
+class ImageOut:
+    """一条要发出去的图片（M7 的甘特图）。**纯数据**：上传 / 发送归 app 层。
+
+    与 ``Reply`` 分开，是因为飞书发图是两步（先传图拿 ``image_key``、再发 image
+    消息，见 ``client.send_image()``），跟纯文本不是一条路。
+    """
+
+    chat_id: str
+    path: str
+    receive_id_type: str = "chat_id"        # "chat_id" | "open_id"
+
+
+@dataclass(frozen=True)
 class Outcome:
     """路由结果 —— 全是数据，router 自己不做任何 I/O。
 
@@ -87,7 +100,10 @@ class Outcome:
       * ``save_preference``：一条志愿（按 ``user_id`` 覆盖写，M4 收志愿）；
       * ``save_assignments``：整份分配结果（M4 结算，一次性覆盖）；
       * ``save_proposal``：一条匿名提议（M5，追加写，含真实 ``user_id`` 留痕）；
-      * ``save_direction``：整份方向结果（M2 落定，一次性覆盖，裸 JSON）。
+      * ``save_direction``：整份方向结果（M2 落定，一次性覆盖，裸 JSON）；
+      * ``save_complete``：M6 的完成标记（``{task_id, completed_at}``，只改那一条）；
+      * ``images``：要发的图片（M7 甘特图），形状照 ``replies`` —— 只是这里走
+        "先传图再发消息"那条路。
     """
 
     replies: tuple[Reply, ...] = ()
@@ -99,6 +115,11 @@ class Outcome:
     save_assignments: tuple[dict, ...] = ()
     save_proposal: dict | None = None
     save_direction: dict | None = None
+    # M6「完成 T3」（§2.1）：``{"task_id": "T3", "completed_at": "…"}``。
+    # app 层按它走 ``mutate_many(ASSIGNMENTS, …)`` **只改那一条**（形状照 save_roster）。
+    save_complete: dict | None = None
+    # M7 执行报告（§3.3）：要发的图片（甘特图 PNG）。
+    images: tuple[ImageOut, ...] = ()
 
 
 def reply(inbound: Inbound, text: str) -> Reply:

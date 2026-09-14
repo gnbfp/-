@@ -83,6 +83,49 @@ class FeishuClient:
             raise FeishuError(f"发消息失败 code={response.code} msg={response.msg}")
         return True
 
+    def send_image(self, chat_id: str, path, receive_id_type: str = "chat_id") -> bool:
+        """发一张图（M7 甘特图）：先 ``image.create`` 拿 ``image_key``，再发 image 消息。
+
+        飞书发图是两步，不像文本一步到位 —— 所以这是**第二个**发送方法，而不是往
+        ``send()`` 里塞分支。任何一步失败都抛 ``FeishuError``（轨迹在 app 层记，P1-J）。
+        """
+        from lark_oapi.api.im.v1 import (
+            CreateImageRequest,
+            CreateImageRequestBody,
+            CreateMessageRequest,
+            CreateMessageRequestBody,
+        )
+
+        image_body = (
+            CreateImageRequestBody.builder()
+            .image_type("message")
+            .image(Path(path).read_bytes())
+            .build()
+        )
+        upload = self._api().im.v1.image.create(
+            CreateImageRequest.builder().request_body(image_body).build()
+        )
+        if not upload.success():
+            raise FeishuError(f"上传图片失败 code={upload.code} msg={upload.msg}")
+
+        body = (
+            CreateMessageRequestBody.builder()
+            .receive_id(chat_id)
+            .msg_type("image")
+            .content(json.dumps({"image_key": upload.data.image_key}, ensure_ascii=False))
+            .build()
+        )
+        request = (
+            CreateMessageRequest.builder()
+            .receive_id_type(receive_id_type or "chat_id")
+            .request_body(body)
+            .build()
+        )
+        response = self._api().im.v1.message.create(request)
+        if not response.success():
+            raise FeishuError(f"发图片失败 code={response.code} msg={response.msg}")
+        return True
+
     # ---------- 下载资源 ----------
 
     def download(self, pending: dict, target_dir) -> Path:

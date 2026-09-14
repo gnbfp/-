@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 from dataclasses import MISSING, asdict, dataclass, field, fields
+from datetime import datetime
 from typing import Any, Optional
 
 __all__ = [
@@ -30,6 +31,7 @@ __all__ = [
     "Roster",
     "RUBRIC_STATUS",
     "ASSIGNMENT_SOURCE",
+    "parse_deadline",
 ]
 
 RUBRIC_STATUS = ("normal", "ambiguous")
@@ -90,6 +92,24 @@ class AssignmentMeta(_Base):
         for name in ("course", "title", "submission", "source_file"):
             if not getattr(self, name):
                 raise SchemaError(f"AssignmentMeta.{name} 不能为空")
+
+
+def parse_deadline(value) -> datetime | None:
+    """``deadline`` → ``datetime``；空 / 脏 / "未标注" → ``None``（D-49）。
+
+    ``value`` 可以是 ``AssignmentMeta``，也可以是原始字符串。截止时间的字符串格式
+    文档没有定义（见上面 AssignmentMeta 的说明），所以这里**只认 ISO 风格**，
+    认不出来就当没有 —— M6 宁可漏催、不可乱催，M7 甘特图则不画截止线。
+    """
+    if hasattr(value, "deadline"):
+        value = getattr(value, "deadline", "")
+    text = str(value or "").strip()
+    if not text or text == "未标注":
+        return None
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
 
 
 @dataclass

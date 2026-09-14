@@ -105,6 +105,8 @@ def render_board(
     cards: Sequence[TaskCard],
     roster: Roster | None,
     preferences: Sequence[Preference] | None = None,
+    *,
+    show_completion: bool = False,
 ) -> str:
     """**分配总表**（§2.5）：按人分组 + 末行统计 + 未交志愿名单（P1-F）。
 
@@ -124,11 +126,14 @@ def render_board(
         if not mine:
             lines.append(f"{label} → 无任务")
             continue
-        lines.append(
-            f"{label} → " + "/ ".join(f"{r.task_id}（{_SOURCE_LABEL[r.source]}）" for r in mine)
-        )
+        lines.append(f"{label} → " + "/ ".join(_card_label(r, show_completion) for r in mine))
         best.append(min(mine, key=lambda r: _SOURCE_ORDER.get(r.source, 9)).source)
 
+    if show_completion:
+        # M7 的一列"完成/未完成"（§3.1）：卡级状态在每行卡上标，这里给个总账
+        total = len(list(assignments or ()))
+        done = sum(1 for r in (assignments or ()) if r.completed_at)
+        lines.append(f"完成 {done}/{total} 张")
     counts = {source: best.count(source) for source in ("volunteer_1", "volunteer_2", "auto")}
     lines.append(
         f"第一志愿 {counts['volunteer_1']} 人 / 第二志愿 {counts['volunteer_2']} 人 / "
@@ -145,6 +150,14 @@ def render_board(
 
 
 # ---------- 小工具 ----------
+
+
+def _card_label(record: AssignmentRecord, show_completion: bool) -> str:
+    """``T1（第一志愿）``；``show_completion`` 时补执行状态（M7）。"""
+    label = f"{record.task_id}（{_SOURCE_LABEL[record.source]}"
+    if show_completion:
+        label += "·已完成" if record.completed_at else "·未完成"
+    return label + "）"
 
 
 def _first_free(

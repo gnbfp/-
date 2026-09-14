@@ -30,7 +30,22 @@ __all__ = [
     "VOTE_SEAL_NEED_PICK",
     "VOTE_NEED_LEADER",
     "VOTE_GENERATE_FAILED",
-    "PLACEHOLDER_COMPLETE",
+    "COMPLETE_NEED_DM",
+    "COMPLETE_NEED_ASSIGNMENTS",
+    "COMPLETE_UNKNOWN",
+    "COMPLETE_NOT_YOURS",
+    "COMPLETE_MINE",
+    "COMPLETE_MINE_NONE",
+    "COMPLETE_OK",
+    "COMPLETE_ALREADY",
+    "REMIND_DUE",
+    "REMIND_OVERDUE",
+    "REPORT_NEED_GROUP",
+    "REPORT_NEED_ROSTER",
+    "REPORT_NEED_LEADER",
+    "REPORT_NEED_ASSIGNMENTS",
+    "REPORT_GENERATING",
+    "REPORT_FAILED",
     "PREFERENCE_LIST",
     "PREFERENCE_SAVED",
     "PREFERENCE_BAD",
@@ -60,8 +75,9 @@ COMMAND_LIST_TEXT = (
     "3. 方向 —— 群里发这句，我生成 2–3 个候选选题方向并开投票\n"
     "4. 你想做哪一块 —— 私聊我发这句，填志愿\n"
     "5. 我想提议：… —— 私聊我发这句，我匿名转达\n"
-    "6. 完成 T3 —— 私聊我发这句，标记任务完成（开发中）\n"
-    "7. 登记 —— 群里发「登记」，按我回的表单 @ 人建花名册"
+    "6. 完成 T3 —— 私聊我发这句，标记任务完成\n"
+    "7. 登记 —— 群里发「登记」，按我回的表单 @ 人建花名册\n"
+    "8. 报告 —— 组长在群里发这句，我把执行报告 + 甘特图发群"
 )
 
 # ---- 作业书 / 拆解 主链路 ----
@@ -102,8 +118,35 @@ VOTE_SEAL_NEED_PICK = "现在还没有票：组长发「封盘 2」直接指定�
 VOTE_NEED_LEADER = "只有组长能封盘。"
 VOTE_GENERATE_FAILED = "候选方向没生成出来（模型输出不合要求），稍后再发一次「方向」。"
 
-# ---- 未接上的模块：只留入口，业务逻辑归各自 owner（方案 §12）----
-PLACEHOLDER_COMPLETE = "「完成 T3」还没接完成标记（M6 在 9/16 接）。"
+# ---- M6 完成标记（§7.1 第 6 条 / D-22 / D-31）----
+COMPLETE_NEED_DM = "这条要私聊我发：私聊发「完成 T3」我就给你标上。"
+COMPLETE_NEED_ASSIGNMENTS = "还没有分配：先在群里发「你想做哪一块」，拿到的卡才能标完成。"
+# 不是你的卡 / 没这张卡时，都**列出他自己领到的卡** —— 不许给假确认（§6.3 的口径）
+COMPLETE_UNKNOWN = "没有 T{index} 这张任务卡。{mine}"
+COMPLETE_NOT_YOURS = "T{index} 不是我分给你的卡，我不能替你标。{mine}"
+COMPLETE_MINE = "你手上的是：{tasks}。"
+COMPLETE_MINE_NONE = "你手上现在没有任务卡。"
+COMPLETE_OK = "已标记完成：{task_id}（{module}）。"
+COMPLETE_ALREADY = "{task_id} 之前就标过了（{at}），我没改时间。"
+
+# ---- M6 临期催办（§2.2；两档 = 待定义-35，逾期档 = D-66）----
+# ``{at}`` 是飞书的 @ 语法 ``<at user_id="ou_x"></at>``，写成纯文本 @某人 不会真 @。
+REMIND_DUE = (
+    "{at} 你的「{module}」还差 {hours} 小时到截止（{deadline}），"
+    "做完私聊我发「完成 {task_id}」。"
+)
+REMIND_OVERDUE = (
+    "{at} 你的「{module}」已经逾期了（截止 {deadline}），"
+    "做完私聊我发「完成 {task_id}」。"
+)
+
+# ---- M7 执行报告（D-64）----
+REPORT_NEED_GROUP = "报告是群里的动作：请到群里发「报告」。"
+REPORT_NEED_ROSTER = "还没有花名册：先在群里发「登记」建一份，再发「报告」。"
+REPORT_NEED_LEADER = "只有组长能要报告。"
+REPORT_NEED_ASSIGNMENTS = "还没有分配：先在群里发「你想做哪一块」，分配完再发「报告」。"
+REPORT_GENERATING = "收到，正在生成执行报告（总表 + 核对清单 + 甘特图），马上发群…"
+REPORT_FAILED = "执行报告没生成出来（渲染出错），稍后再发一次「报告」。"
 
 # ---- M4 志愿分配（§7.1 / D-52~D-54）----
 PREFERENCE_LIST = (
