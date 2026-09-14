@@ -59,6 +59,7 @@ __all__ = [
     "PROPOSAL_POSTED",
     "PROPOSAL_ACK",
     "PROPOSAL_EMPTY",
+    "PROPOSAL_NOT_MEMBER",
     "REGISTER_FORM",
     "REGISTER_FORM_BAD",
     "REGISTER_NEED_LEADER",
@@ -67,6 +68,7 @@ __all__ = [
     "REGISTER_SAVED",
     "REGISTER_CANCELLED",
     "REGISTER_EXPIRED",
+    "REGISTER_LEADER_ONLY",
 ]
 
 COMMAND_LIST_TEXT = (
@@ -178,6 +180,7 @@ NEED_GROUP = "我还没认下群：先在群里发一次指令（例如「作业
 PROPOSAL_POSTED = "有组员提议：{text}"
 PROPOSAL_ACK = "已经匿名发到群里了。"
 PROPOSAL_EMPTY = "「我想提议：」后面要写上内容，例如「我想提议：前端用 React」。"
+PROPOSAL_NOT_MEMBER = "你不在这份花名册里：先在群里「登记」把自己 @ 进去，再来找我提议。"
 
 # ---- 登记（§7.7）----
 REGISTER_FORM = (
@@ -198,3 +201,4 @@ REGISTER_CONFIRM = (
 REGISTER_SAVED = "花名册已保存：组长 {leader}，含组长共 {total} 人。"
 REGISTER_CANCELLED = "已作废，原有名单没动。"
 REGISTER_EXPIRED = "登记超时作废了，原有名单没动。要登记请再发一次「登记」。"
+REGISTER_LEADER_ONLY = "已有花名册，只有组长能重开登记。"

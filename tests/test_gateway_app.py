@@ -1077,3 +1077,52 @@ def test_reminder_scan_without_a_known_group_does_nothing(env):
 
     assert gateway.scan_reminders() == []
     assert sender.sent == []
+
+
+class _M3FailsLLM(FakeLLM):
+    """M1 正常返回，M3 直接抛 LLMError（模拟“连拆 3 次没过自检”）。"""
+
+    def chat_json(self, system, user, parse, **kwargs):
+        if "M1 输入解析" in system:
+            return parse(M1_PAYLOAD)
+        raise LLMError("连拆 3 次都没过自检")
+
+
+def test_m3_failure_keeps_the_previous_snapshot(env):
+    """F2：M1 成功但 M3 失败时，三份产物必须整体不动 —— 不能留下“新 rubric + 旧 cards”。"""
+    gateway, store, sender, _ = env
+    store.save_assignment(
+        AssignmentMeta(
+            course="旧课程",
+            title="旧作业",
+            submission="旧交付",
+            deadline="",
+            source_file="旧作业书.pdf",
+        )
+    )
+    store.save_rubric(
+        [RubricPoint(id="R_old", quote="旧评分点", observable="旧", status="normal")]
+    )
+    store.save_cards(
+        [
+            TaskCard(
+                task_id="T_seed",
+                module_name="旧卡",
+                rubric_refs=["R_old"],
+                effort_hours=4.0,
+                deliverable="旧产物",
+                acceptance="旧验收",
+            )
+        ]
+    )
+    gateway._llm_client = _M3FailsLLM()
+    _seed_pending_file(store)
+
+    gateway.handle(_inbound("作业书"))
+
+    assert sender.texts[0] == replies.PARSING
+    assert sender.texts[-1] == replies.PARSE_FAILED
+    # M1 的产物不能在 M3 失败时单独留下来：三份全是旧的
+    assert [p.id for p in store.load_rubric()] == ["R_old"]
+    assert [c.task_id for c in store.load_cards()] == ["T_seed"]
+    assert store.load_assignment().title == "旧作业"

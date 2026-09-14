@@ -8,12 +8,13 @@ def _point(pid, status="normal"):
     return RubricPoint(id=pid, quote=f"{pid} 原文", observable="可核对", status=status)
 
 
-def _card(task_id="T1", refs=("R1",), hours=4.0):
+def _card(task_id="T1", refs=("R1",), hours=4.0, depends=()):
     return TaskCard(
         task_id=task_id,
         module_name="实现登录模块",
         rubric_refs=list(refs),
         effort_hours=hours,
+        depends_on=list(depends),
         deliverable="一个源文件",
         acceptance="从 R1 原文改写",
     )
@@ -91,3 +92,18 @@ def test_all_ambiguous_reason_is_unchanged():
 def test_ambiguous_points_may_be_referenced_without_error():
     rubric = [_point("R1"), _point("R2", status="ambiguous")]
     assert check([_card(refs=("R1", "R2"))], rubric) == []
+
+
+def test_dependency_cycle_is_reported():
+    """F4：T1↔T2 互依赖是环 —— 不判环就会放过一张永远开不了工的排期。"""
+    cards = [_card("T1", depends=("T2",)), _card("T2", depends=("T1",))]
+    failures = check(cards, [_point("R1")])
+    assert len(failures) == 1
+    assert "依赖成环" in failures[0]
+    assert "T1" in failures[0] and "T2" in failures[0]
+
+
+def test_acyclic_dependency_chain_passes():
+    """回归：正常的前后依赖（T2 依赖 T1）不能误判成环。"""
+    cards = [_card("T1"), _card("T2", depends=("T1",))]
+    assert check(cards, [_point("R1")]) == []

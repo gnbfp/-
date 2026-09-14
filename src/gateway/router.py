@@ -156,29 +156,37 @@ def route(
         # 志愿窗口（5 小时，D-52~D-54）：过期就当场结算，没过期就试收志愿；
         # 都不是（群里发数字 / 私聊发指令）→ 照走 7 条前缀。
         block, expired = preference.read_window(state, now)
+        closing = None
         if block and expired:
-            settled = preference.settle(state, cards, roster, preferences, now)
-            if settled is not None:
-                return settled
-            state = preference.clear(state)        # 结不了（没认下群）：清残留，别卡住 awaiting
+            # 先结算，但**不提前 return**：这条消息本身若是指令（「完成 T1」「拆解」），
+            # 结算之后还要照原路走一遍（同 M2 收口，必修 A）—— 否则窗口一过期，
+            # 当事人那句「完成 T1」就永远落不了盘（F3）。
+            closing = preference.settle(state, cards, roster, preferences, now)
+            if closing is not None and closing.state is not None:
+                state = closing.state             # 结算带回的已清状态
+            else:
+                state = preference.clear(state)   # 结不了（没认下群）：清残留，别卡住 awaiting
         elif block:
             hit = preference.accept(text, inbound, state, cards, roster, preferences, now)
             if hit is not None:
                 return hit
-        return _merge(
-            _by_prefix(
-                inbound,
+        return _with_closing(
+            _merge(
+                _by_prefix(
+                    inbound,
+                    state,
+                    roster,
+                    has_rubric=has_rubric,
+                    cards=cards,
+                    preferences=preferences,
+                    assignments=assignments,
+                    now=now,
+                    source_title=source_title,
+                ),
                 state,
-                roster,
-                has_rubric=has_rubric,
-                cards=cards,
-                preferences=preferences,
-                assignments=assignments,
-                now=now,
-                source_title=source_title,
+                original,
             ),
-            state,
-            original,
+            closing,
         )
 
     return _by_prefix(
@@ -225,13 +233,13 @@ def _by_prefix(
             inbound, state, cards, roster, preferences, now, source_title=source_title
         )
     if any(text.startswith(prefix) for prefix in PROPOSAL_PREFIXES):
-        return _proposal(text, inbound, state, now)
+        return _proposal(text, inbound, state, roster, now)
     match = COMPLETE_PATTERN.match(text)
     if match:
         # 编号由 router 捕获（判定只有一处），剩下的"是不是你的卡 / 标没标过"归 M6
         return complete.accept(match.group(1), inbound, assignments, cards, now)
     if text.startswith("登记"):
-        return register.register_begin(inbound, state, now)
+        return register.register_begin(inbound, state, now, roster)
     if text.startswith("报告"):
         # M7 触发点 = 方案 A（D-64）：只有组长能在群里要报告
         return _report(inbound, roster, assignments)
@@ -272,7 +280,12 @@ def _with_closing(outcome: Outcome, closing: Outcome | None) -> Outcome:
     """把"超时收口"的结果并进这条消息本来该有的结果里（外审必修 A）。
 
     明细 / 落定**排在这条消息的回复之前**（先交代窗口到期，再回答它问的事）；
-    ``state`` 以收口后的为准（冻住 / 已清空），``save_direction`` 只有落定那条路才有。
+    ``state`` 以收口后的为准（冻住 / 已清空）。
+
+    落盘请求合并的口径：这条消息自己产生的优先，收口产生的补上。
+      * ``save_direction`` —— M2 落定（只有投票路径有）；
+      * ``save_assignments`` —— M4 结算（只有志愿窗口路径有）；
+      * ``save_complete`` —— M6 完成标记。
     """
     if closing is None:
         return outcome
@@ -281,16 +294,28 @@ def _with_closing(outcome: Outcome, closing: Outcome | None) -> Outcome:
         replies=(*closing.replies, *outcome.replies),
         state=outcome.state if outcome.state is not None else closing.state,
         save_direction=outcome.save_direction or closing.save_direction,
+        save_assignments=outcome.save_assignments or closing.save_assignments,
+        save_complete=outcome.save_complete or closing.save_complete,
     )
 
 
-def _proposal(text: str, inbound: Inbound, state: dict, now: datetime | None = None) -> Outcome:
+def _proposal(
+    text: str, inbound: Inbound, state: dict, roster=None, now: datetime | None = None
+) -> Outcome:
     """M5 匿名代言（§6.5 / D-55）：私聊提议 → 落盘留痕 → 群里匿名**原样**转达。
 
     正文只 strip 两端，不修改、不总结、不加工（B2 / §6.5）。原来带的 @ 段会被
     ``strip_mentions`` 一起剥掉 —— 与其它指令一致，也免得把 ``@_user_2`` 这种
     内部占位符泄露到群里。
+
+    **只有花名册成员能代言**（F5）：否则任何陌生人都能用反正不透名的
+    “有组员提议：…”往群里灌任何话，还会被当成组员留痕。口径与 M4 收志愿同款：
+    非成员不转发、不落盘，只回一句（D-61 ②）；``roster`` 为空 = 还没登记，谁都算数。
     """
+    known = {member.open_id for member in (getattr(roster, "members", None) or ())}
+    if known and inbound.sender_open_id not in known:
+        return Outcome(replies=(reply(inbound, replies.PROPOSAL_NOT_MEMBER),))
+
     content = ""
     for prefix in PROPOSAL_PREFIXES:
         if text.startswith(prefix):

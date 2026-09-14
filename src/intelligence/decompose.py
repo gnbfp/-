@@ -90,6 +90,7 @@ def check(cards: Sequence[TaskCard], rubric: Sequence[RubricPoint]) -> list[str]
       * ``cards`` 为空 → **短路判不达标**，不调 ``max()``（待定义-31，D-25）
       * 可拆点必须 100% 覆盖（分母 = ``status="normal"``）
       * ``max/min <= BALANCE_LIMIT``；工时取 0.5 地板防除零（``coverage.py``）
+      * ``depends_on`` 不能成环（F4）—— 成环的排期永远开不了工，必须喂回重拆
     """
     reason = _refusal(rubric)
     if reason:
@@ -108,7 +109,49 @@ def check(cards: Sequence[TaskCard], rubric: Sequence[RubricPoint]) -> list[str]
             f"工时不均衡：max/min = {balance.ratio:.2f} > {BALANCE_LIMIT:g}"
             f"（max={balance.max_hours:g}h，min={balance.min_hours:g}h）"
         )
+
+    cycle = _find_cycle(cards)
+    if cycle:
+        failures.append(f"依赖成环：{' → '.join(cycle)}")
     return failures
+
+
+def _find_cycle(cards: Sequence[TaskCard]) -> list[str] | None:
+    """按 ``depends_on`` 构图找环（F4），返回环路径（如 ``[T1, T2, T1]``），无环则 ``None``。
+
+    只看卡片之间的边：悬空 ID 已由 ``_validate_cards`` 挡下，自依赖也已由
+    ``TaskCard.validate()`` 拒掉 —— 这里只负责"多节点互相等待"这种自检漏网的环。
+    路径上不只是点名：把环写成 ``T1 → T2 → T1`` 喂回 LLM，比一句"有环"好修。
+    """
+    ids = {card.task_id for card in cards}
+    graph = {
+        card.task_id: [dep for dep in (card.depends_on or ()) if dep in ids]
+        for card in cards
+    }
+    white, grey, black = 0, 1, 2
+    color = {task_id: white for task_id in graph}
+    stack: list[str] = []
+
+    def visit(node: str) -> list[str] | None:
+        color[node] = grey
+        stack.append(node)
+        for dep in graph.get(node, ()):
+            if color[dep] == grey:                 # 碰到正在走的点 ⇒ 成环
+                return stack[stack.index(dep):] + [dep]
+            if color[dep] == white:
+                found = visit(dep)
+                if found is not None:
+                    return found
+        stack.pop()
+        color[node] = black
+        return None
+
+    for task_id in graph:
+        if color[task_id] == white:
+            found = visit(task_id)
+            if found is not None:
+                return found
+    return None
 
 
 def decompose(

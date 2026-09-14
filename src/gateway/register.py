@@ -42,8 +42,17 @@ REGISTER_CANCEL_WORDS = ("取消登记", "取消")
 _FORM_LINE = re.compile(r"^[ \t]*(组长|组员)[ \t]*[:：]", re.M)
 
 
-def register_begin(inbound: Inbound, state: dict, now: datetime | None = None) -> Outcome:
-    """收到「登记」：回空白表单，进入 collect 阶段（只有发起人能把它填完）。"""
+def register_begin(
+    inbound: Inbound, state: dict, now: datetime | None = None, roster=None
+) -> Outcome:
+    """收到「登记」：回空白表单，进入 collect 阶段（只有发起人能把它填完）。
+
+    **重登记限组长**（D-34 补充口径）：已有花名册时只有现任组长能重开登记 ——
+    否则任何人群里发一次「登记」、把自己填成组长，一句「同意」就把 leader 换掉、
+    之后还能用组长口令（F1 复现）。花名册为空（还没登记过）时任何人可登记。
+    """
+    if getattr(roster, "leader", "") and roster.leader != inbound.sender_open_id:
+        return Outcome(replies=(reply(inbound, replies.REGISTER_LEADER_ONLY),))
     new_state = {
         **(state or {}),
         "awaiting": "register",
