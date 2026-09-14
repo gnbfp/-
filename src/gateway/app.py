@@ -246,7 +246,8 @@ class Gateway:
         if outcome.save_complete is not None:
             self._save_complete(outcome.save_complete)
         for image in outcome.images:                 # M7 甘特图：文本先发、图后发
-            self._send_image(image)
+            if self._send_image(image) is not None:  # 图发失败要在群里说（必修 D）
+                self._send(Reply(chat_id=image.chat_id, text=replies.IMAGE_SEND_FAILED))
         return tuple(failed)
 
     def _report_dm_failures(self, failures, state) -> None:
@@ -296,8 +297,21 @@ class Gateway:
         )
 
     def _save_assignments(self, payloads) -> None:
-        """整份分配结果一次性覆盖（M4 结算，§6.4）。"""
-        self.store.save_assignments([AssignmentRecord.from_dict(p) for p in payloads])
+        """整份分配结果一次性覆盖（M4 结算，§6.4）。
+
+        ``completed_at`` 是执行期的证据，不能因为重开一次志愿窗口就归零（D-67）——
+        覆盖前按 ``task_id`` 把旧的完成时间合并回来，**但只在负责人没变时**：
+        卡换了人，新负责人的"完成"不该继承前任的。
+        """
+        previous = {r.task_id: r for r in (self.store.load_assignments() or ())}
+        merged = []
+        for payload in payloads:
+            record = AssignmentRecord.from_dict(payload)
+            old = previous.get(record.task_id)
+            if not record.completed_at and old is not None and old.assignee == record.assignee:
+                record = replace(record, completed_at=old.completed_at)
+            merged.append(record)
+        self.store.save_assignments(merged)
 
     def _save_proposal(self, payload: dict) -> None:
         """追加一条提议 —— **含真实 ``user_id``**，这是防滥用留痕（§6.5）。
@@ -487,25 +501,27 @@ class Gateway:
             self._send(reply(inbound, replies.REPORT_FAILED))
             return
 
-        text = "\n".join(
-            [
-                allocation.render_board(
-                    assignments,
-                    cards,
-                    roster,
-                    self.store.load_preferences(),
-                    show_completion=True,
-                ),
-                "",
-                render_checklist(
-                    meta, points, cards, result, assignments=assignments, roster=roster
-                ),
-            ]
+        # 拼成一条长文本客户端会折叠 → 拆成「总表」「核对清单」两条（必修 F）；
+        # data/report.md 仍是两份拼起来的完整版。
+        board_text = allocation.render_board(
+            assignments,
+            cards,
+            roster,
+            self.store.load_preferences(),
+            show_completion=True,
         )
-        self.store.path(REPORT).write_text(text + "\n", encoding="utf-8")
+        checklist_text = render_checklist(
+            meta, points, cards, result, assignments=assignments, roster=roster
+        )
+        self.store.path(REPORT).write_text(
+            board_text + "\n\n" + checklist_text + "\n", encoding="utf-8"
+        )
         self._deliver(
             Outcome(
-                replies=(Reply(chat_id=inbound.chat_id, text=text),),
+                replies=(
+                    Reply(chat_id=inbound.chat_id, text=board_text),
+                    Reply(chat_id=inbound.chat_id, text=checklist_text),
+                ),
                 images=(ImageOut(chat_id=inbound.chat_id, path=str(gantt)),),
             )
         )

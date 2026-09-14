@@ -91,13 +91,38 @@ def test_empty_deadline_skips_the_whole_round():
 
 
 def test_same_task_and_tier_is_only_sent_once():
-    sent = [{"task_id": "T1", "tier": TIER_T1}, {"task_id": "T2", "tier": TIER_T1}]
+    sent = [
+        {"task_id": "T1", "tier": TIER_T1, "ok": True},
+        {"task_id": "T2", "tier": TIER_T1, "ok": True},
+    ]
     assert scan(_cards(), _assignments(), _meta(30), sent, NOW) == []
+
+
+def test_a_failed_send_is_retried_next_round():
+    """必修 A：``ok: false`` 的那次不算"已催"，下一轮要重试。"""
+    failed = [{"task_id": "T1", "tier": TIER_T1, "ok": False}]
+    due = scan(_cards(), _assignments(), _meta(30), failed, NOW)
+    assert [r.task_id for r in due] == ["T1", "T2"]        # T1 补发，T2 照常
+
+
+def test_a_legacy_record_without_ok_is_treated_as_not_sent():
+    """旧记录没有 ok 字段 -> 视为未发成功 -> 补发一次（方向是对的）。"""
+    legacy = [{"task_id": "T1", "tier": TIER_T1}]
+    due = scan(_cards(), _assignments(), _meta(30), legacy, NOW)
+    assert [r.task_id for r in due] == ["T1", "T2"]
+
+
+def test_the_record_carries_the_assignee():
+    """必修 E：reminders.json 要能看出催的是谁（事后审计）。"""
+    due = scan(_cards(), _assignments(), _meta(30), (), NOW)
+    record = due[0].to_record("c1", "2026-09-14T10:05:00", True)
+    assert record["assignee"] == "ou_a"
+    assert set(record) == {"task_id", "tier", "assignee", "chat_id", "sent_at", "ok"}
 
 
 def test_changing_tier_reminds_again():
     """带着上一档的记录再来一轮：同一张卡换档要再催一次（48h → 24h）。"""
-    sent = [{"task_id": "T1", "tier": TIER_T1}]
+    sent = [{"task_id": "T1", "tier": TIER_T1, "ok": True}]
     due = scan(_cards(), _assignments(), _meta(10), sent, NOW)
     # 两张卡这时都进了 24h 档：T1 换档要再催一次，T2 之前没催过
     assert [(r.task_id, r.tier) for r in due] == [("T1", TIER_T2), ("T2", TIER_T2)]

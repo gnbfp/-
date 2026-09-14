@@ -91,3 +91,30 @@ def test_empty_deadline_draws_no_line_and_does_not_crash(tmp_path):
 def test_render_gantt_survives_missing_assignments_and_roster(tmp_path):
     path = render_gantt(_cards(), [], _meta(30), tmp_path / "empty.png")
     assert path.read_bytes()[:8] == PNG_MAGIC
+
+
+def test_two_threads_render_at_the_same_time(tmp_path):
+    """必修 C：render_gantt 不碰全局 pyplot，两个线程各渲一张都要成功。"""
+    import threading
+
+    results: list = []
+    errors: list = []
+
+    def _render(name: str) -> None:
+        try:
+            results.append(
+                render_gantt(_cards(), _assignments(), _meta(30), tmp_path / name, _roster())
+            )
+        except Exception as exc:            # noqa: BLE001 —— 线程里要把异常带出来
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_render, args=(f"g{i}.png",)) for i in (1, 2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    assert len(results) == 2
+    for path in results:
+        assert path.read_bytes()[:8] == PNG_MAGIC

@@ -15,6 +15,7 @@ M6+M7 方案 §3.1。
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -25,7 +26,8 @@ import matplotlib
 matplotlib.use("Agg")                       # 必须在 pyplot 之前选后端
 
 import matplotlib.dates as mdates            # noqa: E402
-import matplotlib.pyplot as plt              # noqa: E402
+from matplotlib.backends.backend_agg import FigureCanvasAgg  # noqa: E402
+from matplotlib.figure import Figure         # noqa: E402
 from matplotlib.patches import FancyArrowPatch, Patch  # noqa: E402
 
 from src.models import (  # noqa: E402
@@ -55,11 +57,15 @@ _PALETTE = (
 # 中文字体在前；DejaVu Sans 兜底补中文字体缺的符号。
 CJK_FONTS = ["Microsoft YaHei", "SimHei", "DejaVu Sans"]
 
+# matplotlib 的 Figure 不是线程安全的（必修 C）：M7 报告跑在 pipeline 线程里，
+# 与别的渲染并发会串图。一把锁罩住“建图 → 落盘”整段。
+_RENDER_LOCK = threading.Lock()
+
 
 def _apply_cjk_font() -> None:
     """把中文字体设进 rcParams —— 不设就是满屏方框（Windows 自带 msyh.ttc）。"""
-    plt.rcParams["font.sans-serif"] = list(CJK_FONTS)
-    plt.rcParams["axes.unicode_minus"] = False      # 负号也别退回方框
+    matplotlib.rcParams["font.sans-serif"] = list(CJK_FONTS)
+    matplotlib.rcParams["axes.unicode_minus"] = False   # 负号也别退回方框
 
 
 _apply_cjk_font()
@@ -133,12 +139,17 @@ def render_gantt(
 
     ``roster`` 可选：只是为了图例 / 纵轴显示人名而不是 ``ou_xxx``（纯展示，不参与判定）。
     """
-    _apply_cjk_font()
+    # 字体在 import 时已设过一次（模块级 _apply_cjk_font()），函数里不再改全局 rcParams。
     bars, deadline = plan_bars(cards, assignments, meta)
 
     height = max(2.6, 0.55 * len(bars) + 1.8)
-    fig, ax = plt.subplots(figsize=(10, height))
+    # Figure + Agg canvas 不注册到全局 pyplot（必修 C），锁罩住整段。
+    _RENDER_LOCK.acquire()
+    fig = None
     try:
+        fig = Figure(figsize=(10, height))
+        FigureCanvasAgg(fig)                # 挂在 fig 上，不注册到全局
+        ax = fig.add_subplot(111)
         colors = _assignee_colors(bars)
         ys = list(range(len(bars)))
         for y, bar in zip(ys, bars):
@@ -188,7 +199,9 @@ def render_gantt(
         target.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(target, dpi=140, bbox_inches="tight")
     finally:
-        plt.close(fig)                          # 不关会一直堆在内存里
+        if fig is not None:
+            fig.clear()                         # 手动清，不关会一直堆在内存里
+        _RENDER_LOCK.release()
     return Path(path)
 
 

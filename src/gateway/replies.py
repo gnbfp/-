@@ -46,6 +46,7 @@ __all__ = [
     "REPORT_NEED_ASSIGNMENTS",
     "REPORT_GENERATING",
     "REPORT_FAILED",
+    "IMAGE_SEND_FAILED",
     "PREFERENCE_LIST",
     "PREFERENCE_SAVED",
     "PREFERENCE_BAD",
@@ -147,6 +148,7 @@ REPORT_NEED_LEADER = "只有组长能要报告。"
 REPORT_NEED_ASSIGNMENTS = "还没有分配：先在群里发「你想做哪一块」，分配完再发「报告」。"
 REPORT_GENERATING = "收到，正在生成执行报告（总表 + 核对清单 + 甘特图），马上发群…"
 REPORT_FAILED = "执行报告没生成出来（渲染出错），稍后再发一次「报告」。"
+IMAGE_SEND_FAILED = "甘特图没发出去（网络问题），上面的文字版先到；稍后再发一次「报告」我补一张。"
 
 # ---- M4 志愿分配（§7.1 / D-52~D-54）----
 PREFERENCE_LIST = (

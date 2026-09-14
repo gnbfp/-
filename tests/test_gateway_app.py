@@ -934,13 +934,16 @@ def test_report_posts_the_board_the_checklist_and_a_gantt(env):
     gateway.handle(_inbound("报告", sender_open_id="ou_boss"))
 
     assert sender.texts[0] == replies.REPORT_GENERATING
-    report = sender.texts[1]
-    assert "分配总表" in report
-    assert "评分点核对清单" in report
-    assert "完成 0/1 张" in report                          # M7 的执行列
-    assert "负责人：组长" in report
+    # 必修 F：总表、核对清单拆成两条（拼成一条长文本客户端会折叠）
+    assert len(sender.texts) == 3
+    board, checklist = sender.texts[1], sender.texts[2]
+    assert "分配总表" in board
+    assert "完成 0/1 张" in board                            # M7 的执行列
+    assert "评分点核对清单" in checklist
+    assert "负责人：组长" in checklist
     assert sender.images and sender.images[0][0] == "c1"    # 甘特图发的是这个群
-    assert "分配总表" in store.path("report.md").read_text(encoding="utf-8")
+    saved = store.path("report.md").read_text(encoding="utf-8")
+    assert "分配总表" in saved and "评分点核对清单" in saved   # 存档仍是完整版
     assert store.path("gantt.png").read_bytes()[:4] == b"\x89PNG"
 
 
@@ -961,6 +964,50 @@ def test_images_are_delivered_through_the_sender(env):
     gateway._deliver(Outcome(images=(ImageOut(chat_id="c1", path="gantt.png"),)))
 
     assert sender.images == [("c1", "gantt.png", "chat_id")]
+
+
+def test_a_failed_gantt_is_reported_in_the_group(env):
+    """必修 D：图没发出去要在群里说一声，不能只留文字版。"""
+    gateway, store, sender, _ = env
+
+    class _NoImageSender(FakeSender):
+        def send_image(self, chat_id, path, receive_id_type="chat_id"):
+            raise RuntimeError("boom")
+
+    gateway.sender = _NoImageSender()
+    gateway._deliver(Outcome(images=(ImageOut(chat_id="c1", path="gantt.png"),)))
+
+    assert gateway.sender.texts == [replies.IMAGE_SEND_FAILED]
+
+
+def test_resettling_keeps_completed_at_only_for_the_same_assignee(env):
+    """必修 B / D-67：重开志愿窗口不能把完成标记清零；换人则不继承前任的。"""
+    gateway, store, sender, _ = env
+    store.save_assignments(
+        [
+            AssignmentRecord(
+                task_id="T1", assignee="ou_a", source="volunteer_1",
+                completed_at="2026-09-14T09:00:00",
+            ),
+            AssignmentRecord(
+                task_id="T2", assignee="ou_a", source="volunteer_1",
+                completed_at="2026-09-14T09:30:00",
+            ),
+        ]
+    )
+
+    gateway._deliver(
+        Outcome(
+            save_assignments=(
+                {"task_id": "T1", "assignee": "ou_a", "source": "volunteer_1"},
+                {"task_id": "T2", "assignee": "ou_b", "source": "volunteer_1"},
+            )
+        )
+    )
+
+    records = {r.task_id: r for r in store.load_assignments()}
+    assert records["T1"].completed_at == "2026-09-14T09:00:00"   # 负责人没变 -> 保留
+    assert records["T2"].completed_at is None                    # 换人了 -> 丢掉
 
 
 def _seed_due_task(store, hours=30):

@@ -12,6 +12,9 @@
 
 **同 `(task_id, tier)` 只催一次**（查 `data/reminders.json`），换档才再催一次 ——
 没有这条，每小时扫一次就会每小时 @ 一次，直接刷屏。
+**但发失败的那次不算数**：`ok: false` 的记录不进 `already`，下一轮重试（D-66 / 必修 A）——
+否则一次网络抖动就让那个人这一档永远收不到催办，而且没人知道。旧记录没有 `ok` 字段
+→ 视为未发成功 → 会补发一次，方向是对的。
 
 @人用飞书文本的 ``<at user_id="ou_xxx"></at>`` 语法：写成纯文本 ``@某人`` 不会真 @。
 """
@@ -67,6 +70,7 @@ class Reminder:
         return {
             "task_id": self.task_id,
             "tier": self.tier,
+            "assignee": self.open_id,        # 必修 E：催的是谁（事后审计看这一列）
             "chat_id": chat_id,
             "sent_at": sent_at,
             "ok": bool(ok),
@@ -92,7 +96,7 @@ def scan(
     already = {
         (item.get("task_id"), item.get("tier"))
         for item in (sent or ())
-        if isinstance(item, dict)
+        if isinstance(item, dict) and item.get("ok")   # 只看发成功的（必修 A）
     }
     due: list[Reminder] = []
     for card in cards or ():
