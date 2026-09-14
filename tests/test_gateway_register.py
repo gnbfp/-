@@ -11,7 +11,7 @@ from src.gateway.register import (
     register_cancel,
     register_step,
 )
-from src.models import Roster
+from src.models import Member, Roster
 
 NOW = datetime(2026, 9, 12, 13, 30, 0)
 FORM = "登记\n组长：@_user_1\n组员：@_user_2 @_user_3"
@@ -210,3 +210,25 @@ def test_escape_word_also_clears_an_expired_window():
 
     assert outcome.replies[0].text == replies.REGISTER_EXPIRED
     assert outcome.state["awaiting"] is None
+
+def _led_roster(leader):
+    return Roster(
+        leader=leader,
+        members=[Member(open_id=leader, name="组长"), Member(open_id="ou_other", name="组员")],
+        registered_at="2026-09-12T09:00:00",
+        confirmed_by=leader,
+    )
+
+
+def test_rebegin_by_non_leader_is_rejected():
+    """F1：非组长重登记不能夺权 —— 不回表单、也不改状态。"""
+    outcome = register_begin(_inbound("登记"), {}, NOW, _led_roster("ou_zhang"))
+    assert outcome.replies[0].text == replies.REGISTER_LEADER_ONLY
+    assert outcome.state is None
+
+
+def test_rebegin_by_leader_still_opens_the_form():
+    """防回归：组长重登记照常（唯一的例外）。"""
+    outcome = register_begin(_inbound("登记"), {}, NOW, _led_roster("ou_initiator"))
+    assert outcome.state["awaiting"] == "register"
+    assert outcome.state["register"]["stage"] == "collect"

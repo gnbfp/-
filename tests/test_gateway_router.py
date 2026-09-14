@@ -539,3 +539,97 @@ def test_pipeline_never_fires_without_the_matching_ack():
         outcome = route(inbound, state, None, **kwargs)
         assert outcome.pipeline == ""
         assert _texts(outcome) != [replies.PARSING]
+
+# ---------- 重登记限组长（F1）----------
+
+
+def test_rebegin_by_a_non_leader_is_refused():
+    """F1：已有花名册时，非组长重登记不能夺权 —— 原花名册不动、状态不改。"""
+    _, roster = _m4_fixtures()                      # 组长 = ou_zhang
+    outcome = route(_inbound("登记", sender_open_id="ou_li"), {}, roster)
+    assert _texts(outcome) == [replies.REGISTER_LEADER_ONLY]
+    assert outcome.state is None
+
+
+def test_rebegin_by_the_leader_still_opens_the_form():
+    """防回归：组长重登记照常进 collect。"""
+    _, roster = _m4_fixtures()
+    outcome = route(_inbound("登记", sender_open_id="ou_zhang"), {}, roster)
+    assert outcome.state["register"]["stage"] == "collect"
+
+
+# ---------- 过期志愿窗口不吃掉当前指令（F3）----------
+
+
+def _expired_preference_state():
+    return {
+        "awaiting": "preference",
+        "preference": {
+            "opened_at": (NOW - timedelta(hours=6)).isoformat(timespec="seconds"),
+            "chat_id": "c1",
+        },
+        "group_chat_id": "c1",
+    }
+
+
+def test_expired_window_still_records_a_completion_mark():
+    """F3：窗口过期先结算，但这句「完成 T1」照常落盘 —— 不能被总表吞掉。"""
+    cards, roster = _m4_fixtures()
+    outcome = route(
+        _inbound("完成 T1", chat_type="p2p", sender_open_id="ou_li"),
+        _expired_preference_state(),
+        roster,
+        cards=cards,
+        assignments=[AssignmentRecord("T1", "ou_li", "volunteer_1")],
+        now=NOW,
+    )
+    assert outcome.save_assignments                              # 总表落了盘
+    assert "分配总表" in _texts(outcome)[0]                     # 总表发在前
+    assert outcome.save_complete == {
+        "task_id": "T1",
+        "completed_at": NOW.isoformat(timespec="seconds"),
+    }
+    assert outcome.state["awaiting"] is None                     # 窗口已清
+
+
+def test_expired_window_still_runs_a_decompose_command():
+    """F3 同款：过期窗口 + 「拆解」→ 既出总表、又照常起重活。"""
+    cards, roster = _m4_fixtures()
+    outcome = route(
+        _inbound("拆解"),
+        _expired_preference_state(),
+        roster,
+        cards=cards,
+        has_rubric=True,
+        now=NOW,
+    )
+    assert outcome.save_assignments
+    assert outcome.pipeline == "decompose"
+
+
+# ---------- 匿名代言只认花名册成员（F5）----------
+
+
+def test_stranger_proposal_is_refused_and_not_recorded():
+    """F5：陌生人不能借机器人匿名往群里灌话。"""
+    _, roster = _m4_fixtures()
+    outcome = route(
+        _inbound("我想提议：加一个图表", sender_open_id="ou_x"),
+        {"group_chat_id": "c1"},
+        roster,
+    )
+    assert _texts(outcome) == [replies.PROPOSAL_NOT_MEMBER]
+    assert outcome.save_proposal is None
+    assert not any("有组员提议" in text for text in _texts(outcome))
+
+
+def test_member_proposal_is_still_relayed():
+    """回归：花名册成员照常匿名转达 + 留痕。"""
+    _, roster = _m4_fixtures()
+    outcome = route(
+        _inbound("我想提议：加一个图表", sender_open_id="ou_li"),
+        {"group_chat_id": "c1"},
+        roster,
+    )
+    assert "有组员提议：加一个图表" in _texts(outcome)
+    assert outcome.save_proposal["user_id"] == "ou_li"

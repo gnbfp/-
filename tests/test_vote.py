@@ -521,7 +521,10 @@ def test_preference_window_clears_vote_residue():
 
 
 def test_register_begin_clears_vote_residue():
-    """「登记」也要清掉投票窗口残留（P0-D 的另一半；反向见 preference.open_window）。"""
-    outcome = route(_inbound("登记"), _state(), _roster(), now=OPEN)
+    """「登记」也要清掉投票窗口残留（P0-D 的另一半；反向见 preference.open_window）。
+
+    已有花名册时只有组长能重开登记（F1），所以这里得用组长发。
+    """
+    outcome = route(_inbound("登记", sender_open_id=LEADER), _state(), _roster(), now=OPEN)
     assert outcome.state["awaiting"] == "register"
     assert outcome.state["vote"] is None
