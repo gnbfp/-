@@ -20,9 +20,19 @@ __all__ = [
     "NO_RUBRIC_FOUND",
     "PLACEHOLDER_DIRECTION",
     "PLACEHOLDER_VOTE",
-    "PLACEHOLDER_PREFERENCE",
-    "PLACEHOLDER_PROPOSAL",
     "PLACEHOLDER_COMPLETE",
+    "PREFERENCE_LIST",
+    "PREFERENCE_SAVED",
+    "PREFERENCE_BAD",
+    "PREFERENCE_NEED_CARDS",
+    "PREFERENCE_NEED_ROSTER",
+    "PREFERENCE_NOT_MEMBER",
+    "PREFERENCE_CONFIRM_SEAL",
+    "PREFERENCE_DM_FAILED",
+    "NEED_GROUP",
+    "PROPOSAL_POSTED",
+    "PROPOSAL_ACK",
+    "PROPOSAL_EMPTY",
     "REGISTER_FORM",
     "REGISTER_FORM_BAD",
     "REGISTER_NEED_LEADER",
@@ -38,8 +48,8 @@ COMMAND_LIST_TEXT = (
     "1. 作业书 —— 先发作业书文件，再回复「作业书」，我抽评分点并拆任务卡\n"
     "2. 拆解 —— 用现有评分点重跑一次任务拆解\n"
     "3. 方向 —— 生成 2–3 个候选选题方向（开发中）\n"
-    "4. 你想做哪一块 —— 私聊我发这句，填志愿（开发中）\n"
-    "5. 我想提议：… —— 私聊我发这句，我匿名转达（开发中）\n"
+    "4. 你想做哪一块 —— 私聊我发这句，填志愿\n"
+    "5. 我想提议：… —— 私聊我发这句，我匿名转达\n"
     "6. 完成 T3 —— 私聊我发这句，标记任务完成（开发中）\n"
     "7. 登记 —— 群里发「登记」，按我回的表单 @ 人建花名册"
 )
@@ -61,9 +71,36 @@ NO_RUBRIC_FOUND = (
 # ---- 未接上的模块：只留入口，业务逻辑归各自 owner（方案 §12）----
 PLACEHOLDER_DIRECTION = "「方向」还没接上候选方向生成（M2 在 9/16 接）。现在可以先用「作业书」把任务卡拆出来。"
 PLACEHOLDER_VOTE = "投票还没接上（M2 在 9/16 接）：现在回复数字我还没法计票。"
-PLACEHOLDER_PREFERENCE = "「你想做哪一块」还没接志愿分配（M4 在 9/16 接）。"
-PLACEHOLDER_PROPOSAL = "「我想提议」还没接匿名代言（M5 在 9/16 接）。"
 PLACEHOLDER_COMPLETE = "「完成 T3」还没接完成标记（M6 在 9/16 接）。"
+
+# ---- M4 志愿分配（§7.1 / D-52~D-54）----
+PREFERENCE_LIST = (
+    "任务卡清单（回复序号即可，想排序就按优先级发，例如「2 1」）：\n"
+    "{items}"
+)
+PREFERENCE_SAVED = "记下了：你的志愿是 {tasks}。想改就再发一次序号。"
+PREFERENCE_BAD = "序号我没看懂。我看到的是 {tasks}，重发一次序号就行。"
+PREFERENCE_NEED_CARDS = "还没有任务卡：先把作业书文件发给我，回「作业书」拆出任务卡。"
+PREFERENCE_NEED_ROSTER = "还没有花名册：先在群里发「登记」建一份，再发「你想做哪一块」。"
+PREFERENCE_NOT_MEMBER = "我这份花名册里没有你：先在群里「登记」把你自己 @ 进去，再私聊我填志愿。"
+# 组长重发「你想做哪一块」不再直接封盘（P0-B / D-56）：有人交过就先确认一次，
+# 免得"为了再发一遍清单"顺手把窗口关了、不可撤回。
+PREFERENCE_CONFIRM_SEAL = (
+    "现在封盘会按已有 {done} 份志愿分配，还有 {missing} 人没交。"
+    "回复「封盘」确认，回复别的继续等。"
+)
+# 主动私聊发不出去时，在群里把话说清楚（P0-C），别"群里说已发、实际没人收到"。
+PREFERENCE_DM_FAILED = (
+    "有 {count} 人我没能私聊到。请这几位私聊我发「你想做哪一块」，我单独回你清单。"
+)
+
+# 主动发群 / 私聊的前置：机器人得先见过至少一条群消息，才知道"群"是哪个（D-54）。
+NEED_GROUP = "我还没认下群：先在群里发一次指令（例如「作业书」），我认一下群。"
+
+# ---- M5 匿名代言（§6.5 / D-55）----
+PROPOSAL_POSTED = "有组员提议：{text}"
+PROPOSAL_ACK = "已经匿名发到群里了。"
+PROPOSAL_EMPTY = "「我想提议：」后面要写上内容，例如「我想提议：前端用 React」。"
 
 # ---- 登记（§7.7）----
 REGISTER_FORM = (

@@ -73,7 +73,8 @@ class FeishuClient:
         )
         request = (
             CreateMessageRequest.builder()
-            .receive_id_type("chat_id")
+            # 回话用 chat_id；M4/M5 主动私聊某个人时用 open_id（D-54 / D-55）
+            .receive_id_type(message.receive_id_type or "chat_id")
             .request_body(body)
             .build()
         )

@@ -12,14 +12,18 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import socket
 import sys
 import threading
+from datetime import datetime
+from pathlib import Path
 
 from src.config import ConfigError, load_config
 from src.gateway import replies
 from src.gateway.client import FeishuClient
-from src.gateway.events import Inbound, Outcome, reply, to_inbound
+from src.gateway.events import Inbound, Outcome, Reply, reply, to_inbound
 from src.gateway.router import route
 from src.intelligence.coverage import coverage_loop
 from src.intelligence.decompose import decompose
@@ -32,11 +36,82 @@ from src.intelligence.extract import (
 )
 from src.intelligence.llm import LLMClient, LLMError
 from src.intelligence.parse import parse_assignment
-from src.models import Roster
+from src.models import AssignmentRecord, Preference, Roster
 from src.report.checklist import render_checklist
-from src.storage import JsonStore
+from src.storage import PREFERENCES, PROPOSALS, SEEN, JsonStore
 
 __all__ = ["Gateway", "main"]
+
+# data/seen.json 只留最近这么多条 message_id（P0-A）。
+_SEEN_LIMIT = 200
+
+# 单实例保护的守护端口（P0-E）：第二个进程 bind 不上就拒绝启动。
+INSTANCE_PORT = 47653
+LOCK_FILE = "app.lock"
+
+
+def _stamp() -> str:
+    """日志时间戳（P1-J）：明天复盘要靠它把两个进程的行对齐。"""
+    return datetime.now().isoformat(timespec="seconds")
+
+
+class SingleInstance:
+    """单实例保护（P0-E）—— 机器上只允许跑一个网关。
+
+    真机故障：同时跑了两个 `python -m src.gateway.app`，同一套凭据 → 两条
+    WebSocket → 每条群消息被两个进程各处理一次（重复回话、落盘互相覆盖）。
+    `message_id` 去重（P0-A）对两个进程只能偶尔挡住（各读各的 seen.json，有竞态），
+    所以要在**进程级**互斥。
+
+    Windows 上按 pid 判存活不安全（`os.kill(pid, 0)` 会真的把进程杀掉），所以
+    守卫用 **bind 127.0.0.1:<port>** —— bind 是原子的，第二个实例必然失败。
+    `data/app.lock` 只写来给人看（pid / started_at），**不参与判定**：硬退
+    （`os._exit`）留下的残留锁文件不会挡住下一次启动。
+    """
+
+    def __init__(self, data_dir, port: int = INSTANCE_PORT) -> None:
+        self.path = Path(data_dir) / LOCK_FILE
+        self.port = port
+        self._sock: socket.socket | None = None
+
+    def acquire(self) -> bool:
+        """``True`` = 抢到；``False`` = 已有实例在跑，别启动。"""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.bind(("127.0.0.1", self.port))
+        except OSError:
+            sock.close()
+            return False
+        self._sock = sock
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(
+            json.dumps(
+                {"pid": os.getpid(), "started_at": _stamp(), "port": self.port},
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return True
+
+    def release(self) -> None:
+        """正常退出：放掉端口 + 删锁。"""
+        if self._sock is not None:
+            try:
+                self._sock.close()
+            finally:
+                self._sock = None
+        try:
+            self.path.unlink()
+        except FileNotFoundError:
+            pass
+
+    def describe(self) -> str:
+        """把现有锁文件读成人话，给拒绝启动时的那行错误用。"""
+        try:
+            return self.path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return ""
 
 
 class Gateway:
@@ -61,11 +136,39 @@ class Gateway:
             )
 
     def handle(self, inbound: Inbound) -> Outcome:
-        """快路径：路由 → 回话 → 落盘 → 需要时起后台重活。"""
+        """快路径：路由 → 回话 → 落盘 → 需要时起后台重活。
+
+        第一件事是**按 message_id 去重**（P0-A）：飞书会重复投递 / 重连补投同一个
+        事件，不去重就会把同一条指令完整跑两遍（新群"先清单、再总表"就是这么来的）。
+        重复事件直接丢掉：不发消息、不写业务数据。
+
+        每条消息先打一行日志（P1-G）：真机出问题时先看这一行，否则永远是黑盒。
+        """
+        print(
+            f"[M0] {_stamp()} recv id={inbound.message_id} chat={inbound.chat_id} "
+            f"from={inbound.sender_open_id} type={inbound.message_type} "
+            f"text={inbound.text[:40]}"
+        )
+        if self._is_duplicate(inbound.message_id):
+            # 去重命中也要留痕，否则看不出到底有没有重复投递（P1-G / P0-A）
+            print(f"[M0] {_stamp()} dup 跳过 id={inbound.message_id}")
+            return Outcome()
+        self._remember_group(inbound)
         state = self.store.load_state()
         has_rubric = bool(self.store.load_rubric())
-        outcome = route(inbound, state, self.store.load_members(), has_rubric=has_rubric)
-        self._deliver(outcome)
+        meta = self.store.load_assignment()
+        outcome = route(
+            inbound,
+            state,
+            self.store.load_members(),
+            has_rubric=has_rubric,
+            cards=self.store.load_cards(),
+            preferences=self.store.load_preferences(),
+            source_title=meta.title if meta else "",
+        )
+        failures = self._deliver(outcome)
+        # 主动私聊发不出去要说出来（P0-C）：否则"群里说清单已发、实际没人收到"。
+        self._report_dm_failures(failures, outcome.state or state)
 
         # 重活起不起，route() 已经判过（Outcome.pipeline）—— 这里不再自己判一遍，
         # 否则"回了「表单没看懂」却照样跑 M1"（必修 4）
@@ -75,29 +178,131 @@ class Gateway:
             ).start()
         return outcome
 
-    def _deliver(self, outcome: Outcome) -> None:
-        for message in outcome.replies:
+    def _is_duplicate(self, message_id: str) -> bool:
+        """P0-A：同一条消息只处理一次。落 ``data/seen.json``，只留最近 ``_SEEN_LIMIT`` 条。
+
+        ``message_id`` 为空（老事件 / 单测夹具）时不去重 —— 没有标识就没法认人。
+        """
+        if not message_id:
+            return False
+        seen = self.store.read_raw(SEEN, []) or []
+        if message_id in seen:
+            return True
+        self.store.mutate_raw(
+            SEEN, lambda items: [*(items or []), message_id][-_SEEN_LIMIT:], default=[]
+        )
+        return False
+
+    def _send(self, message: Reply):
+        """发一条并打一行轨迹（P1-J）。返回 ``None`` = 成功，否则返回异常。"""
+        try:
             self.sender.send(message)
+        except Exception as exc:
+            print(
+                f"[M0] {_stamp()} -> {message.receive_id_type}:{message.chat_id} "
+                f"失败({type(exc).__name__}) | {message.text[:40]}"
+            )
+            return exc
+        print(
+            f"[M0] {_stamp()} -> {message.receive_id_type}:{message.chat_id} "
+            f"ok | {message.text[:40]}"
+        )
+        return None
+
+    def _deliver(self, outcome: Outcome) -> tuple[Reply, ...]:
+        """发出所有回复，返回**发失败的**那些（P0-C）。每条都打一行轨迹（P1-J）。"""
+        failed: list[Reply] = []
+        for message in outcome.replies:
+            # 一条发失败不能吃掉后面几条：M4 开窗口要连发"清单发群 + 每人私聊"，
+            # 某个人的私聊发不出去，群里的清单必须照发（方案 §7：不能静默失败）。
+            if self._send(message) is not None:
+                failed.append(message)
         if outcome.state is not None:
             self.store.save_state(outcome.state)
         if outcome.save_roster is not None:
             self.store.save_members(Roster.from_dict(outcome.save_roster))
+        if outcome.save_preference is not None:
+            self._save_preference(outcome.save_preference)
+        if outcome.save_assignments:
+            self._save_assignments(outcome.save_assignments)
+        if outcome.save_proposal is not None:
+            self._save_proposal(outcome.save_proposal)
+        return tuple(failed)
+
+    def _report_dm_failures(self, failures, state) -> None:
+        """私聊发不出去就在群里补一句（P0-C）。只统计 ``open_id`` 目标 —— 那才是"人"。"""
+        dm_failed = [r for r in failures if r.receive_id_type == "open_id"]
+        group = (state or {}).get("group_chat_id") or ""
+        if not dm_failed or not group:
+            return
+        self._send(
+            Reply(
+                chat_id=group,
+                text=replies.PREFERENCE_DM_FAILED.format(count=len(dm_failed)),
+            )
+        )
+
+    # ---------- M4 / M5 的落盘 ----------
+
+    def _remember_group(self, inbound: Inbound) -> None:
+        """任何群消息都刷新 ``state.group_chat_id``（D-54）。
+
+        M4 的清单 / 总表、M5 的匿名转达都要**主动发到群**，而 router 是纯函数、不读
+        文件 —— 所以"群是哪个"由 app 层记进 state。机器人自己的消息不算：那是回声，
+        不是"群里有人在活动"。
+        """
+        if inbound.sender_type == "app" or inbound.chat_type != "group" or not inbound.chat_id:
+            return
+        state = self.store.load_state()
+        if state.get("group_chat_id") == inbound.chat_id:
+            return
+        state["group_chat_id"] = inbound.chat_id
+        self.store.save_state(state)
+
+    def _save_preference(self, payload: dict) -> None:
+        """按 ``user_id`` **覆盖**写志愿（后投覆盖先投，D-33 / §6.3）。
+
+        走 ``mutate_many``：它是"类型化列表的原子读-改-写"，正是为 M4 收志愿准备的
+        原语 —— 两个组员同时私聊回复时不会丢更新。
+        """
+        preference = Preference.from_dict(payload)
+        self.store.mutate_many(
+            PREFERENCES,
+            Preference,
+            lambda items: [p for p in items if p.user_id != preference.user_id] + [preference],
+        )
+
+    def _save_assignments(self, payloads) -> None:
+        """整份分配结果一次性覆盖（M4 结算，§6.4）。"""
+        self.store.save_assignments([AssignmentRecord.from_dict(p) for p in payloads])
+
+    def _save_proposal(self, payload: dict) -> None:
+        """追加一条提议 —— **含真实 ``user_id``**，这是防滥用留痕（§6.5）。
+
+        ``proposals.json`` 的字段级定义在 requirements 里没有（§6.5 只规定了语义），
+        所以走裸 JSON 的原子读-改-写，不硬造数据类。
+        """
+        self.store.mutate_raw(PROPOSALS, lambda items: [*(items or []), payload], default=[])
 
     # ---------- 慢路径：M1 / M3 ----------
 
     def run_pipeline(self, kind: str, inbound: Inbound, state: dict) -> None:
-        """后台线程里跑。异常一律转成一句人话回群里（方案 §7：不能静默失败）。"""
+        """后台线程里跑。异常一律转成一句人话回群里（方案 §7：不能静默失败）。
+
+        回话一律走 ``_send()``（P1-J）：它不抛异常、失败也留轨迹 —— 否则
+        "except 里再发一次、再失败"会让整条后台线程静默死掉，屏幕上什么都看不到。
+        """
         try:
             if kind == "assignment":
                 self._run_assignment(inbound, state)
             elif kind == "decompose":
                 self._run_decompose(inbound)
         except ExtractError as exc:
-            self.sender.send(reply(inbound, replies.EXTRACT_REJECTED.format(reason=exc)))
+            self._send(reply(inbound, replies.EXTRACT_REJECTED.format(reason=exc)))
         except LLMError:
-            self.sender.send(reply(inbound, replies.PARSE_FAILED))
+            self._send(reply(inbound, replies.PARSE_FAILED))
         except Exception as exc:                      # 兜底也要说话
-            self.sender.send(reply(inbound, f"{replies.PARSE_FAILED}（{type(exc).__name__}）"))
+            self._send(reply(inbound, f"{replies.PARSE_FAILED}（{type(exc).__name__}）"))
         finally:
             if kind == "assignment":
                 pending = (state or {}).get("pending_file") or {}
@@ -114,7 +319,7 @@ class Gateway:
         # 空 rubric：M1 全文没找到评分标准（D-48）→ 不跑 M3、不拿正文要求凑数，
         # 也**一个字都不落盘** —— 否则拒拆会把上一份好产物清空（D-49 ②）。
         if not parsed.points:
-            self.sender.send(reply(inbound, replies.NO_RUBRIC_FOUND))
+            self._send(reply(inbound, replies.NO_RUBRIC_FOUND))
             return
 
         self.store.save_assignment(parsed.meta)
@@ -136,7 +341,7 @@ class Gateway:
         ]
         if warnings:
             report += "\n\n" + "\n".join(f"[软警告] {w}" for w in warnings)
-        self.sender.send(reply(inbound, report))
+        self._send(reply(inbound, report))
 
     def _run_decompose(self, inbound: Inbound) -> None:
         """「拆解」：用现有评分点重跑 M3，再出一份核对清单。"""
@@ -147,7 +352,7 @@ class Gateway:
         meta = self.store.load_assignment()
         if meta is None:
             coverage = coverage_loop(result.cards, points)
-            self.sender.send(
+            self._send(
                 reply(
                     inbound,
                     f"拆解完成：{len(result.cards)} 张任务卡，"
@@ -155,7 +360,7 @@ class Gateway:
                 )
             )
             return
-        self.sender.send(
+        self._send(
             reply(inbound, render_checklist(meta, points, result.cards, result))
         )
 
@@ -195,24 +400,45 @@ def main(argv=None) -> int:
 
     store = JsonStore(config.data_dir)
     store.ensure_dirs()
-    client_kwargs = {}
-    if args.quiet:
-        import lark_oapi as lark
 
-        client_kwargs["log_level"] = lark.LogLevel.WARNING
-    client = FeishuClient(config, **client_kwargs)
-    gateway = Gateway(config, store, sender=client, downloader=client)
-
-    print("[M0] 正在建立长连接（首次加载 SDK 约 20 秒，属正常）", file=sys.stderr)
-    print("     测试群里 @机器人 发「拆解」即可开始；Ctrl+C 退出", file=sys.stderr)
-    if args.seconds > 0:
-        threading.Timer(args.seconds, lambda: os._exit(0)).start()
+    # P0-E：单实例保护。真机故障是两个进程跑同一套凭据 → 每条消息被处理两次。
+    guard = SingleInstance(store.root)
+    if not guard.acquire():
+        print("[M0] 启动被拒：已有一个网关实例在跑（单实例保护，P0-E）。", file=sys.stderr)
+        existing = guard.describe()
+        if existing:
+            print(f"     现有 app.lock：{existing}", file=sys.stderr)
+        print(
+            "     同一套凭据跑两个进程 = 每条群消息被处理两次。请先关掉另一个窗口。",
+            file=sys.stderr,
+        )
+        return 3
 
     try:
-        client.start(gateway.on_event)
-    except KeyboardInterrupt:
-        pass
-    return 0
+        client_kwargs = {}
+        if args.quiet:
+            import lark_oapi as lark
+
+            client_kwargs["log_level"] = lark.LogLevel.WARNING
+        client = FeishuClient(config, **client_kwargs)
+        gateway = Gateway(config, store, sender=client, downloader=client)
+
+        print("[M0] 正在建立长连接（首次加载 SDK 约 20 秒，属正常）", file=sys.stderr)
+        print("     测试群里 @机器人 发「拆解」即可开始；Ctrl+C 退出", file=sys.stderr)
+        if args.seconds > 0:
+            def _stop() -> None:
+                guard.release()
+                os._exit(0)
+
+            threading.Timer(args.seconds, _stop).start()
+
+        try:
+            client.start(gateway.on_event)
+        except KeyboardInterrupt:
+            pass
+        return 0
+    finally:
+        guard.release()
 
 
 if __name__ == "__main__":

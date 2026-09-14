@@ -11,6 +11,7 @@ from src.gateway.router import (
     route,
     strip_mentions,
 )
+from src.models import Member, Roster, TaskCard
 
 
 def _inbound(text="", **over):
@@ -29,6 +30,31 @@ def _inbound(text="", **over):
 
 def _texts(outcome):
     return [r.text for r in outcome.replies]
+
+
+def _m4_fixtures():
+    """M4 要的三张卡 + 三个人（花名册顺序就是兜底并列时的先后）。"""
+    cards = [
+        TaskCard(
+            task_id=f"T{index}",
+            module_name=f"模块{index}",
+            rubric_refs=["R1"],
+            effort_hours=1.0,
+            deliverable="交付物",
+            acceptance="验收标准",
+        )
+        for index in (1, 2, 3)
+    ]
+    roster = Roster(
+        leader="ou_zhang",
+        members=[
+            Member(open_id=open_id, name=name)
+            for open_id, name in (("ou_zhang", "张三"), ("ou_li", "李四"), ("ou_wang", "王五"))
+        ],
+        registered_at="2026-09-13T09:00:00",
+        confirmed_by="ou_zhang",
+    )
+    return cards, roster
 
 
 # ---------- 剥 @段 ----------
@@ -184,15 +210,20 @@ def test_direction_is_placeholder():
     assert _texts(route(_inbound("方向"), {}, None)) == [replies.PLACEHOLDER_DIRECTION]
 
 
-def test_preference_prompt_is_placeholder():
-    assert _texts(route(_inbound("你想做哪一块"), {}, None)) == [replies.PLACEHOLDER_PREFERENCE]
+def test_preference_command_without_cards_points_to_assignment():
+    """M4：没有任务卡就先去拆作业书（占位文案已随 M4 落地删掉）。"""
+    assert _texts(route(_inbound("你想做哪一块"), {}, None)) == [replies.PREFERENCE_NEED_CARDS]
 
 
 def test_proposal_accepts_both_colon_widths():
+    """M5：全角 / 半角冒号都认，正文**原样**转达，且原样落盘留痕。"""
     for prefix in PROPOSAL_PREFIXES:
-        assert _texts(route(_inbound(prefix + "加一个图表"), {}, None)) == [
-            replies.PLACEHOLDER_PROPOSAL
+        outcome = route(_inbound(prefix + "加一个图表"), {"group_chat_id": "c1"}, None)
+        assert _texts(outcome) == [
+            "有组员提议：加一个图表",
+            replies.PROPOSAL_ACK,
         ]
+        assert outcome.save_proposal["text"] == "加一个图表"
 
 
 def test_complete_matches_tn_with_spaces_and_case():
@@ -219,9 +250,31 @@ def test_awaiting_vote_wins_over_prefix_matching():
     assert _texts(outcome) == [replies.PLACEHOLDER_VOTE]
 
 
-def test_awaiting_preference_wins_over_prefix_matching():
-    outcome = route(_inbound("你想做哪一块"), {"awaiting": "preference"}, None)
-    assert _texts(outcome) == [replies.PLACEHOLDER_PREFERENCE]
+def test_awaiting_preference_only_counts_digits_in_p2p():
+    """D-54：窗口开着时**群里的裸数字不算志愿**（照走兜底文案），私聊才算。
+
+    窗口长达 5 小时、而 awaiting 是全局的 —— 不限定会话的话，群里谁打一个数字
+    都会被记成志愿序号。
+    """
+    state = {
+        "awaiting": "preference",
+        "preference": {"opened_at": NOW.isoformat(timespec="seconds")},
+        "group_chat_id": "c1",
+    }
+    cards, roster = _m4_fixtures()
+
+    assert _texts(route(_inbound("3"), state, roster, cards=cards, now=NOW)) == [
+        replies.COMMAND_LIST_TEXT
+    ]
+    outcome = route(
+        _inbound("3", chat_type="p2p", sender_open_id="ou_li"),
+        state,
+        roster,
+        cards=cards,
+        now=NOW,
+    )
+    assert outcome.save_preference["ranked_task_ids"] == ["T3"]
+    assert outcome.pipeline == ""
 
 
 def test_awaiting_register_routes_into_register_machine():

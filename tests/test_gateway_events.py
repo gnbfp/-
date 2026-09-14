@@ -73,3 +73,69 @@ def test_outcome_defaults_are_empty_and_immutable():
     assert outcome.state is None
     assert outcome.download_file_key == ""
     assert outcome.save_roster is None
+
+
+def test_to_inbound_flattens_a_post_message():
+    """P1-I：post（富文本 / 转发）没有顶层 text，要拍平并归一成 text。"""
+    inbound = to_inbound(
+        _event(
+            content='{"title": "", "content": [[{"tag": "text", "text": "1"}]]}',
+            message_type="post",
+        )
+    )
+    assert inbound.message_type == "text"
+    assert inbound.text == "1"
+
+
+def test_post_message_becomes_a_preference_inside_the_window():
+    """P1-I 的现场：拍平之后的 post 要能在志愿窗口里落成志愿。"""
+    from datetime import datetime
+
+    from src.gateway.router import route
+    from src.models import Member, Roster, TaskCard
+
+    inbound = to_inbound(
+        _event(
+            content='{"title": "", "content": [[{"tag": "text", "text": "1"}]]}',
+            message_type="post",
+            chat_type="p2p",
+            chat_id="ou_li",
+            sender_open_id="ou_li",
+        )
+    )
+    cards = [
+        TaskCard(
+            task_id="T1",
+            module_name="模块1",
+            rubric_refs=["R1"],
+            effort_hours=1.0,
+            deliverable="交付物",
+            acceptance="验收标准",
+        )
+    ]
+    roster = Roster(
+        leader="ou_zhang",
+        members=[Member(open_id="ou_zhang", name="张三"), Member(open_id="ou_li", name="李四")],
+        registered_at="2026-09-13T09:00:00",
+        confirmed_by="ou_zhang",
+    )
+    state = {
+        "awaiting": "preference",
+        "preference": {
+            "opened_at": "2026-09-13T09:00:00",
+            "opened_by": "ou_zhang",
+            "chat_id": "c1",
+        },
+        "group_chat_id": "c1",
+    }
+
+    outcome = route(
+        inbound,
+        state,
+        roster,
+        cards=cards,
+        preferences=[],
+        now=datetime(2026, 9, 13, 9, 0, 0),
+    )
+
+    assert outcome.save_preference["ranked_task_ids"] == ["T1"]

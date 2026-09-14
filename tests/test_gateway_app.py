@@ -1,5 +1,9 @@
 """M0 组装层单测：依赖注入 FakeSender / FakeDownloader / FakeLLM（方案 §9）。"""
 
+import itertools
+import json
+import os
+import socket
 from datetime import datetime
 
 import pytest
@@ -9,7 +13,7 @@ from src.gateway import replies
 from src.gateway.events import Inbound, Mention
 from src.intelligence.extract import ExtractError
 from src.intelligence.llm import LLMError
-from src.models import AssignmentMeta, RubricPoint, TaskCard
+from src.models import AssignmentMeta, Member, Roster, RubricPoint, TaskCard
 from src.storage import JsonStore
 
 DOC = "作业书：1 实现词法分析器 40 分。2 撰写实验报告 60 分。"
@@ -126,6 +130,9 @@ def env(tmp_path, monkeypatch):
     return gateway, store, sender, downloader
 
 
+_MSG_SEQ = itertools.count(1)
+
+
 def _inbound(text="", **over):
     data = dict(
         chat_id="c1",
@@ -134,7 +141,9 @@ def _inbound(text="", **over):
         text=text,
         sender_type="user",
         sender_open_id="ou_user",
-        message_id="m1",
+        # 每条默认一个新 id：handle() 会按 message_id 去重（P0-A），
+        # 夹具共用 "m1" 会被当成重复事件、第二个 handle 直接空转。
+        message_id=f"m{next(_MSG_SEQ)}",
     )
     data.update(over)
     return Inbound(**data)
@@ -418,3 +427,316 @@ def test_register_collect_routes_through_mentions(env):
     gateway.handle(_inbound(form, mentions=mentions))
     assert store.load_state()["register"]["stage"] == "confirm"
     assert "共 3 人" in sender.texts[-1]
+
+
+# ---------- M4 志愿分配（§2.1~§2.4 / D-52~D-54）----------
+
+
+def _seed_m4(store):
+    """三张卡 + 三个人（组长 = ou_user，就是默认的发送者）。"""
+    store.save_cards(
+        [
+            TaskCard(
+                task_id=f"T{index}",
+                module_name=f"模块{index}",
+                rubric_refs=["R1"],
+                effort_hours=1.0,
+                deliverable="交付物",
+                acceptance="验收标准",
+            )
+            for index in (1, 2, 3)
+        ]
+    )
+    store.save_members(
+        Roster(
+            leader="ou_user",
+            members=[
+                Member(open_id=open_id, name=name)
+                for open_id, name in (("ou_user", "张三"), ("ou_b", "李四"), ("ou_c", "王五"))
+            ],
+            registered_at="2026-09-13T09:00:00",
+            confirmed_by="ou_user",
+        )
+    )
+
+
+def _dm(text, sender):
+    return _inbound(text, chat_type="p2p", chat_id=sender, sender_open_id=sender)
+
+
+def test_m4_group_command_opens_the_window_and_dms_everyone(env):
+    gateway, store, sender, _ = env
+    _seed_m4(store)
+
+    gateway.handle(_inbound("你想做哪一块"))
+
+    state = store.load_state()
+    assert state["awaiting"] == "preference"
+    assert state["group_chat_id"] == "c1"
+    assert sender.sent[0].chat_id == "c1"                     # 清单发群
+    assert [m.receive_id_type for m in sender.sent[1:]] == ["open_id"] * 3
+    assert [m.chat_id for m in sender.sent[1:]] == ["ou_user", "ou_b", "ou_c"]
+
+
+def test_m4_collects_preferences_and_settles_into_assignments(env):
+    gateway, store, sender, _ = env
+    _seed_m4(store)
+    gateway.handle(_inbound("你想做哪一块"))
+
+    gateway.handle(_dm("1", "ou_b"))
+    gateway.handle(_dm("1 2", "ou_c"))
+
+    assert [p.user_id for p in store.load_preferences()] == ["ou_b", "ou_c"]
+    assert store.load_preferences()[1].ranked_task_ids == ["T1", "T2"]
+
+    sender.sent.clear()
+    gateway.handle(_inbound("你想做哪一块"))                   # 组长重发 → 二次确认（P0-B）
+
+    assert store.load_state()["awaiting"] == "preference"      # 不再直接封盘
+    assert sender.texts == [replies.PREFERENCE_CONFIRM_SEAL.format(done=2, missing=1)]
+
+    sender.sent.clear()
+    gateway.handle(_inbound("封盘"))                           # 组长确认 → 结算
+
+    assert store.load_state()["awaiting"] is None
+    assert {a.task_id: (a.assignee, a.source) for a in store.load_assignments()} == {
+        "T1": ("ou_b", "volunteer_1"),
+        "T2": ("ou_c", "volunteer_2"),
+        "T3": ("ou_user", "auto"),
+    }
+    assert sender.sent[0].chat_id == "c1"
+    assert "分配总表" in sender.texts[0]
+    assert "第一志愿 1 人 / 第二志愿 1 人 / 兜底 1 人" in sender.texts[0]
+
+
+def test_m4_resubmission_overwrites_the_earlier_preference(env):
+    gateway, store, _, _ = env
+    _seed_m4(store)
+    gateway.handle(_inbound("你想做哪一块"))
+
+    gateway.handle(_dm("1", "ou_b"))
+    first = store.load_preferences()[0].submitted_at
+    gateway.handle(_dm("2 3", "ou_b"))
+
+    stored = store.load_preferences()
+    assert len(stored) == 1                                   # 后投覆盖先投，不是追加
+    assert stored[0].ranked_task_ids == ["T2", "T3"]
+    assert stored[0].submitted_at >= first
+
+
+def test_m4_group_digits_during_the_window_are_ignored(env):
+    """D-54 的现场：窗口开着的时候在群里打数字，不该被记成志愿。"""
+    gateway, store, sender, _ = env
+    _seed_m4(store)
+    gateway.handle(_inbound("你想做哪一块"))
+
+    sender.sent.clear()
+    gateway.handle(_inbound("3"))
+
+    assert store.load_preferences() == []
+    assert sender.texts == [replies.COMMAND_LIST_TEXT]
+
+
+# ---------- M5 匿名代言（§6.5 / D-55）----------
+
+
+def test_m5_proposal_is_relayed_anonymously_and_leaves_a_trace(env):
+    gateway, store, sender, _ = env
+    gateway.handle(_inbound("随便说句话"))                     # 先让机器人认下"群"
+    sender.sent.clear()
+
+    gateway.handle(_dm("我想提议：前端用 React", "ou_b"))
+
+    assert sender.sent[0].chat_id == "c1"                     # 转达到群
+    assert sender.sent[0].text == "有组员提议：前端用 React"
+    assert "ou_b" not in sender.sent[0].text
+    assert "李四" not in sender.sent[0].text
+    assert sender.sent[1].chat_id == "ou_b"                   # 私聊确认
+    assert sender.texts[1] == replies.PROPOSAL_ACK
+
+    proposals = store.load_proposals()
+    assert proposals[0]["user_id"] == "ou_b"                  # 留痕真实身份
+    assert proposals[0]["text"] == "前端用 React"
+
+
+def test_m5_without_a_known_group_does_not_pretend_to_post(env):
+    gateway, store, sender, _ = env
+    gateway.handle(_dm("我想提议：加图表", "ou_b"))
+    assert sender.texts == [replies.NEED_GROUP]
+    assert store.load_proposals() == []
+
+
+def test_group_id_is_remembered_from_any_group_message(env):
+    gateway, store, _, _ = env
+    gateway.handle(_inbound("随便说句话"))
+    assert store.load_state()["group_chat_id"] == "c1"
+
+    gateway.handle(_dm("你好", "ou_b"))
+    assert store.load_state()["group_chat_id"] == "c1"        # 私聊不会把它改掉
+
+
+def test_a_failed_direct_message_does_not_eat_the_group_reply(env):
+    """一条发失败不能吃掉后面几条：M4 要连发"清单发群 + 每人私聊"。"""
+    gateway, store, _, _ = env
+    _seed_m4(store)
+
+    class _SelectiveSender(FakeSender):
+        def send(self, message):
+            if message.receive_id_type == "open_id":
+                raise RuntimeError("私聊发不出去")
+            return super().send(message)
+
+    gateway.sender = _SelectiveSender()
+    gateway.handle(_inbound("你想做哪一块"))
+
+    assert "任务卡清单" in gateway.sender.texts[0]             # 群里的清单照发
+    assert store.load_state()["awaiting"] == "preference"
+
+
+# ---------- M4 真机故障修复（P0-A / P0-C / P0-D / P1-E）----------
+
+
+def test_duplicate_message_id_is_processed_only_once(env):
+    """P0-A：飞书重复投递同一个事件时，第二次必须什么都不做。"""
+    gateway, store, sender, _ = env
+    inbound = _inbound("随便说句话")
+
+    gateway.handle(inbound)
+    sent_before = len(sender.sent)
+    outcome = gateway.handle(inbound)
+
+    assert outcome.replies == ()
+    assert len(sender.sent) == sent_before
+
+
+def test_failed_dm_is_reported_in_the_group(env):
+    """P0-C：私聊发不出去要在群里说出来，不能只留一行 stderr。"""
+    gateway, store, _, _ = env
+    _seed_m4(store)
+
+    class _NoDmSender(FakeSender):
+        def send(self, message):
+            if message.receive_id_type == "open_id":
+                raise RuntimeError("code=230101")
+            return super().send(message)
+
+    sender = _NoDmSender()
+    gateway.sender = sender
+    gateway.handle(_inbound("你想做哪一块"))
+
+    assert sender.sent[-1].chat_id == "c1"
+    assert sender.texts[-1] == replies.PREFERENCE_DM_FAILED.format(count=3)
+
+
+def test_register_clears_a_leftover_preference_window(env):
+    """P0-D：切到登记状态机必须清掉旧志愿窗口。"""
+    gateway, store, _, _ = env
+    _seed_m4(store)
+    gateway.handle(_inbound("你想做哪一块"))
+    assert store.load_state()["awaiting"] == "preference"
+
+    gateway.handle(_inbound("登记"))
+
+    state = store.load_state()
+    assert state["awaiting"] == "register"
+    assert state["preference"] is None
+
+
+def test_preference_window_clears_register_residue(env):
+    """P0-D 反向：开志愿窗口时清掉登记残留。"""
+    gateway, store, _, _ = env
+    _seed_m4(store)
+    gateway.handle(_inbound("登记"))
+    assert store.load_state()["register"] is not None
+
+    gateway.handle(_inbound("你想做哪一块"))
+
+    state = store.load_state()
+    assert state["awaiting"] == "preference"
+    assert state["register"] is None
+
+
+def test_task_list_names_the_source_assignment(env):
+    """P1-E：清单首行点明这套卡来自哪份作业书。"""
+    gateway, store, sender, _ = env
+    _seed_m4(store)
+    store.save_assignment(
+        AssignmentMeta(
+            course="软件系统设计",
+            title="课程任务书",
+            submission="源码 + 报告",
+            deadline="",
+            source_file="课程任务书.pdf",
+        )
+    )
+
+    gateway.handle(_inbound("你想做哪一块"))
+
+    assert sender.texts[0].startswith("当前任务卡来自《课程任务书》（3 张）")
+
+
+def test_every_message_is_logged_and_duplicates_are_marked(env, capsys):
+    """P1-G：每条消息都有一行日志；去重命中也要留痕。"""
+    gateway, store, sender, _ = env
+    inbound = _inbound("随便说句话")
+
+    gateway.handle(inbound)
+    gateway.handle(inbound)
+
+    out = capsys.readouterr().out
+    assert f"recv id={inbound.message_id}" in out
+    assert "dup 跳过" in out
+
+
+def test_reply_trace_is_logged_with_a_timestamp(env, capsys):
+    """P1-J：每条发出去的回复都留一行带时间戳的轨迹。"""
+    gateway, store, sender, _ = env
+
+    gateway.handle(_inbound("随便说句话"))
+
+    out = capsys.readouterr().out
+    assert " -> chat_id:c1 ok | " in out
+    assert "recv id=" in out
+
+
+def _free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def test_single_instance_guard_blocks_a_second_copy(tmp_path):
+    """P0-E：机器上只能跑一个网关，第二个进程直接启动失败。"""
+    port = _free_port()
+    first = app_module.SingleInstance(tmp_path, port=port)
+    assert first.acquire() is True
+
+    lock = json.loads((tmp_path / "app.lock").read_text(encoding="utf-8"))
+    assert lock["pid"] == os.getpid()
+
+    second = app_module.SingleInstance(tmp_path, port=port)
+    assert second.acquire() is False                 # 第二个实例被挡住
+
+    first.release()
+    assert not (tmp_path / "app.lock").exists()      # 正常退出删锁
+
+    third = app_module.SingleInstance(tmp_path, port=port)
+    assert third.acquire() is True                   # 退出后可以再起
+    third.release()
+
+
+def test_pipeline_reply_failure_is_logged_not_silent(env, capsys):
+    """P1-J 续：后台流水线回话也走轨迹；send 再失败也不会静默炸掉线程。"""
+    gateway, store, sender, _ = env
+    _seed_pending_file(store)
+
+    class _AlwaysFail(FakeSender):
+        def send(self, message):
+            raise RuntimeError("send died")
+
+    gateway.sender = _AlwaysFail()
+
+    gateway.handle(_inbound("作业书"))            # 不抛异常 = 后台线程没被炸掉
+
+    out = capsys.readouterr().out
+    assert "失败(RuntimeError)" in out           # 失败留在轨迹里

@@ -40,6 +40,7 @@ __all__ = [
     "PROPOSALS",
     "MEMBERS",
     "STATE",
+    "SEEN",
     "UPLOADS",
 ]
 
@@ -52,6 +53,7 @@ ASSIGNMENTS = "assignments.json"
 PROPOSALS = "proposals.json"
 MEMBERS = "members.json"
 STATE = "state.json"
+SEEN = "seen.json"        # P0-A 事件去重（最近 200 条 message_id）
 UPLOADS = "uploads"
 
 # 进程级锁：单进程（B1）⇒ 全局唯一落盘 ⇒ 一把锁就够

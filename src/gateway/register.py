@@ -47,6 +47,7 @@ def register_begin(inbound: Inbound, state: dict, now: datetime | None = None) -
     new_state = {
         **(state or {}),
         "awaiting": "register",
+        "preference": None,          # 切状态机要清掉旧志愿窗口（P0-D）
         "register": {
             "stage": "collect",
             "initiator_open_id": inbound.sender_open_id,
@@ -269,7 +270,8 @@ def _expired(block: dict, now: datetime | None) -> bool:
 
 
 def _cleared(state: dict) -> dict:
-    return {**(state or {}), "awaiting": None, "register": None}
+    # 登记窗口退出 / 作废时，一并清掉可能残留的志愿窗口（P0-D）
+    return {**(state or {}), "awaiting": None, "register": None, "preference": None}
 
 
 def _iso(moment: datetime) -> str:

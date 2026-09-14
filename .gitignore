@@ -1,6 +1,9 @@
 # 运行时落盘目录（D-30：数据不入库）
 data/
 
+# 运行日志（可能含飞书长连接 access_key / ticket，禁止入库）
+*.log
+
 # Python
 __pycache__/
 *.py[cod]
