@@ -96,15 +96,21 @@ class FeishuClient:
             CreateMessageRequestBody,
         )
 
-        image_body = (
-            CreateImageRequestBody.builder()
-            .image_type("message")
-            .image(Path(path).read_bytes())
-            .build()
-        )
-        upload = self._api().im.v1.image.create(
-            CreateImageRequest.builder().request_body(image_body).build()
-        )
+        # 必须传**文件对象**，且 ``image.create`` 在 ``with`` 块**内部**完成（真机实测）：
+        #   image(bytes)              -> success=False code=234011 "Can't recognize image format."
+        #   image(BytesIO + .name)    -> success=True  code=0
+        #   image(open(path, "rb"))   -> success=True  code=0
+        # 所以别先读成 bytes —— 文件要一直开着给 SDK 读。
+        with open(path, "rb") as fh:
+            image_body = (
+                CreateImageRequestBody.builder()
+                .image_type("message")
+                .image(fh)
+                .build()
+            )
+            upload = self._api().im.v1.image.create(
+                CreateImageRequest.builder().request_body(image_body).build()
+            )
         if not upload.success():
             raise FeishuError(f"上传图片失败 code={upload.code} msg={upload.msg}")
 

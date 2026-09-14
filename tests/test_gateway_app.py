@@ -843,7 +843,7 @@ def test_pipeline_reply_failure_is_logged_not_silent(env, capsys):
     gateway.handle(_inbound("作业书"))            # 不抛异常 = 后台线程没被炸掉
 
     out = capsys.readouterr().out
-    assert "失败(RuntimeError)" in out           # 失败留在轨迹里
+    assert "失败(RuntimeError: send died)" in out   # 轨迹里带上了异常 message
 
 
 # ---------- M6 / M7（D-64 / D-65 / D-66）----------

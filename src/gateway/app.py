@@ -214,7 +214,7 @@ class Gateway:
         except Exception as exc:
             print(
                 f"[M0] {_stamp()} -> {message.receive_id_type}:{message.chat_id} "
-                f"失败({type(exc).__name__}) | {message.text[:40]}"
+                f"失败({type(exc).__name__}: {exc}) | {message.text[:40]}"
             )
             return exc
         print(
@@ -351,7 +351,7 @@ class Gateway:
         except Exception as exc:
             print(
                 f"[M0] {_stamp()} -> {image.receive_id_type}:{image.chat_id} "
-                f"图片失败({type(exc).__name__}) | {image.path}"
+                f"图片失败({type(exc).__name__}: {exc}) | {image.path}"
             )
             return exc
         print(
