@@ -723,3 +723,20 @@ def test_single_instance_guard_blocks_a_second_copy(tmp_path):
     third = app_module.SingleInstance(tmp_path, port=port)
     assert third.acquire() is True                   # 退出后可以再起
     third.release()
+
+
+def test_pipeline_reply_failure_is_logged_not_silent(env, capsys):
+    """P1-J 续：后台流水线回话也走轨迹；send 再失败也不会静默炸掉线程。"""
+    gateway, store, sender, _ = env
+    _seed_pending_file(store)
+
+    class _AlwaysFail(FakeSender):
+        def send(self, message):
+            raise RuntimeError("send died")
+
+    gateway.sender = _AlwaysFail()
+
+    gateway.handle(_inbound("作业书"))            # 不抛异常 = 后台线程没被炸掉
+
+    out = capsys.readouterr().out
+    assert "失败(RuntimeError)" in out           # 失败留在轨迹里

@@ -287,18 +287,22 @@ class Gateway:
     # ---------- 慢路径：M1 / M3 ----------
 
     def run_pipeline(self, kind: str, inbound: Inbound, state: dict) -> None:
-        """后台线程里跑。异常一律转成一句人话回群里（方案 §7：不能静默失败）。"""
+        """后台线程里跑。异常一律转成一句人话回群里（方案 §7：不能静默失败）。
+
+        回话一律走 ``_send()``（P1-J）：它不抛异常、失败也留轨迹 —— 否则
+        "except 里再发一次、再失败"会让整条后台线程静默死掉，屏幕上什么都看不到。
+        """
         try:
             if kind == "assignment":
                 self._run_assignment(inbound, state)
             elif kind == "decompose":
                 self._run_decompose(inbound)
         except ExtractError as exc:
-            self.sender.send(reply(inbound, replies.EXTRACT_REJECTED.format(reason=exc)))
+            self._send(reply(inbound, replies.EXTRACT_REJECTED.format(reason=exc)))
         except LLMError:
-            self.sender.send(reply(inbound, replies.PARSE_FAILED))
+            self._send(reply(inbound, replies.PARSE_FAILED))
         except Exception as exc:                      # 兜底也要说话
-            self.sender.send(reply(inbound, f"{replies.PARSE_FAILED}（{type(exc).__name__}）"))
+            self._send(reply(inbound, f"{replies.PARSE_FAILED}（{type(exc).__name__}）"))
         finally:
             if kind == "assignment":
                 pending = (state or {}).get("pending_file") or {}
@@ -315,7 +319,7 @@ class Gateway:
         # 空 rubric：M1 全文没找到评分标准（D-48）→ 不跑 M3、不拿正文要求凑数，
         # 也**一个字都不落盘** —— 否则拒拆会把上一份好产物清空（D-49 ②）。
         if not parsed.points:
-            self.sender.send(reply(inbound, replies.NO_RUBRIC_FOUND))
+            self._send(reply(inbound, replies.NO_RUBRIC_FOUND))
             return
 
         self.store.save_assignment(parsed.meta)
@@ -337,7 +341,7 @@ class Gateway:
         ]
         if warnings:
             report += "\n\n" + "\n".join(f"[软警告] {w}" for w in warnings)
-        self.sender.send(reply(inbound, report))
+        self._send(reply(inbound, report))
 
     def _run_decompose(self, inbound: Inbound) -> None:
         """「拆解」：用现有评分点重跑 M3，再出一份核对清单。"""
@@ -348,7 +352,7 @@ class Gateway:
         meta = self.store.load_assignment()
         if meta is None:
             coverage = coverage_loop(result.cards, points)
-            self.sender.send(
+            self._send(
                 reply(
                     inbound,
                     f"拆解完成：{len(result.cards)} 张任务卡，"
@@ -356,7 +360,7 @@ class Gateway:
                 )
             )
             return
-        self.sender.send(
+        self._send(
             reply(inbound, render_checklist(meta, points, result.cards, result))
         )
 
