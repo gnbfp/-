@@ -60,10 +60,15 @@ def register_begin(
 ) -> Outcome:
     """收到「登记」：回空白表单，进入 collect 阶段（只有发起人能把它填完）。
 
+    **只认群里**（D-69 附带口径）：登记靠 @ 人拿 `open_id`，私聊里 @ 不了人 ⇒
+    私聊开窗口只会白占 `awaiting` 5 分钟（期间的群消息全走登记状态机），填了也没用。
+
     **重登记限组长**（D-34 补充口径）：已有花名册时只有现任组长能重开登记 ——
     否则任何人群里发一次「登记」、把自己填成组长，一句「同意」就把 leader 换掉、
     之后还能用组长口令（F1 复现）。花名册为空（还没登记过）时任何人可登记。
     """
+    if inbound.chat_type != "group":
+        return Outcome(replies=(reply(inbound, replies.REGISTER_NEED_GROUP),))
     if getattr(roster, "leader", "") and roster.leader != inbound.sender_open_id:
         return Outcome(replies=(reply(inbound, replies.REGISTER_LEADER_ONLY),))
     new_state = {

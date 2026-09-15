@@ -71,6 +71,7 @@ __all__ = [
     "REGISTER_CANCELLED",
     "REGISTER_EXPIRED",
     "REGISTER_LEADER_ONLY",
+    "REGISTER_NEED_GROUP",
 ]
 
 COMMAND_LIST_TEXT = (
@@ -214,3 +215,6 @@ REGISTER_SAVED = "花名册已保存：组长 {leader}，含组长共 {total} �
 REGISTER_CANCELLED = "已作废，原有名单没动。"
 REGISTER_EXPIRED = "登记超时作废了，原有名单没动。要登记请再发一次「登记」。"
 REGISTER_LEADER_ONLY = "已有花名册，只有组长能重开登记。"
+# 登记靠 @ 人拿 open_id，私聊里 @ 不了人 ⇒ 私聊开窗只会白占 awaiting（D-69 附带口径）
+REGISTER_NEED_GROUP = "登记是群里的动作：请到群里发「登记」，我回一张表单给你填。"
+

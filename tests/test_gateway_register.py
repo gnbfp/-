@@ -52,6 +52,26 @@ def test_begin_starts_the_collect_ttl_and_remembers_the_initiator():
     assert block["initiator_open_id"] == "ou_initiator"
 
 
+def test_register_in_private_chat_asks_for_the_group():
+    """私聊发「登记」只回一句"去群里发"，**不开窗口**（D-69 附带口径）。
+
+    登记靠 @ 人拿 open_id，私聊里 @ 不了人 ⇒ 开出来的窗口只会白占 `awaiting`
+    5 分钟（期间群消息全走登记状态机），用户填了也没用。
+    """
+    private = Inbound(
+        chat_id="ou_initiator",
+        chat_type="p2p",
+        message_type="text",
+        text="登记",
+        sender_type="user",
+        sender_open_id="ou_initiator",
+        message_id="m2",
+    )
+    outcome = register_begin(private, {}, NOW)
+    assert [r.text for r in outcome.replies] == [replies.REGISTER_NEED_GROUP]
+    assert outcome.state is None                   # 一个字都不许落盘
+
+
 def test_collect_after_expiry_cancels():
     state = register_begin(_inbound("登记"), {}, NOW).state
     later = NOW + REGISTER_TTL + timedelta(seconds=1)
