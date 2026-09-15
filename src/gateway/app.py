@@ -130,6 +130,9 @@ class SingleInstance:
 class Gateway:
     """把连接层、纯路由、落盘、智能层接起来。全是依赖注入，方便离线测。"""
 
+    # 取机器人标识失败后的重试间隔（秒）：只在失败时生效，成功即永久缓存。
+    _BOT_IDENTITY_RETRY_SECONDS = 60.0
+
     def __init__(self, config, store, sender, downloader, llm_client=None) -> None:
         self.config = config
         self.store = store
@@ -140,41 +143,62 @@ class Gateway:
         self._bot_open_id = ""
         self._bot_name = ""
         self._bot_identity_ready = False
+        self._bot_identity_last_try = 0.0
 
     # ---------- 机器人自身标识（@ 门，D-69）----------
 
     def _bot_identity(self) -> tuple[str, str]:
-        """``(bot_open_id, bot_name)``；只取一次，之后走缓存。
+        """``(bot_open_id, bot_name)``；成功后缓存，失败**按节流重试**（D-69 自审修正）。
 
-        sender 没有 ``bot_info``（单测夹具）或调用失败 → 返回两个空串，
-        router 见到空标识会**宽松放行**（群里不带 @ 也照旧处理）。
+        三种结果分开对待，别把"暂时取不到"错当成"永远取不到"：
+          * **成功**（拿到 open_id 或 app_name）→ 永久缓存；
+          * **sender 没有 ``bot_info()``**（单测夹具）→ 结构性缺失，只告警一次、不重试；
+          * **调用抛异常**（网络抖动等）→ **不缓存**，至少隔 ``_BOT_IDENTITY_RETRY_SECONDS``
+            再试一次 —— 否则开机第一秒抖一下，@ 门就宽松放行到进程结束，
+            组员讨论时的裸数字又会被计票（当初修这条就是为了消灭它）。
         """
         if self._bot_identity_ready:
             return self._bot_open_id, self._bot_name
-        self._bot_identity_ready = True
 
         probe = getattr(self.sender, "bot_info", None)
         if not callable(probe):
+            self._bot_identity_ready = True          # 夹具没有这个能力：不用反复试
             print(f"[M0] {_stamp()} 取不到机器人标识：sender 没有 bot_info()（@ 门宽松放行）")
             return "", ""
+
+        now = time.monotonic()
+        if now - self._bot_identity_last_try < self._BOT_IDENTITY_RETRY_SECONDS:
+            return "", ""                            # 刚失败过，本轮先宽松放行
+        self._bot_identity_last_try = now
+
         try:
             info = probe() or {}
         except Exception as exc:                      # 一次网络抖动不能让机器人变哑巴
             print(
                 f"[M0] {_stamp()} 取机器人标识失败：{type(exc).__name__}: {exc}"
-                "（@ 门宽松放行：群里不带 @ 也会处理）"
+                f"（本轮 @ 门宽松放行，{self._BOT_IDENTITY_RETRY_SECONDS:.0f}s 后重试）"
             )
             return "", ""
+
         self._bot_open_id = str(info.get("open_id") or "")
         self._bot_name = str(info.get("app_name") or "")
         if not self._bot_open_id and not self._bot_name:
+            self._bot_identity_ready = True           # 接口答了但没给标识：别每条消息都问
             print(f"[M0] {_stamp()} 机器人标识为空（@ 门宽松放行）")
         else:
+            self._bot_identity_ready = True
             print(
                 f"[M0] {_stamp()} 机器人标识：open_id={self._bot_open_id or '(未知)'} "
                 f"name={self._bot_name or '(未知)'} —— 群消息只认 @ 到它的"
             )
         return self._bot_open_id, self._bot_name
+
+    def warm_bot_identity(self) -> None:
+        """启动时预热一次机器人标识（@ 门，D-69）。**任何失败都不许拦住启动**。"""
+        try:
+            self._bot_identity()
+        except Exception as exc:
+            print(f"[M0] {_stamp()} 预热机器人标识出错（忽略）：{type(exc).__name__}: {exc}")
 
     # ---------- 飞书回调入口 ----------
 
@@ -674,6 +698,9 @@ def main(argv=None) -> int:
         client = FeishuClient(config, **client_kwargs)
         gateway = Gateway(config, store, sender=client, downloader=client)
         gateway.start_reminder_loop()
+        # @ 门（D-69）的机器人标识：启动就先取一次，免得第一条消息白等 / 失败也看不见。
+        # 失败不拦启动 —— `_bot_identity()` 自己会节流重试，那一轮按宽松放行。
+        gateway.warm_bot_identity()
 
         print("[M0] 正在建立长连接（首次加载 SDK 约 20 秒，属正常）", file=sys.stderr)
         print("     测试群里 @机器人 发「拆解」即可开始；Ctrl+C 退出", file=sys.stderr)
