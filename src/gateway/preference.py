@@ -244,10 +244,38 @@ def settle(
                 chat_id=group,
                 text=allocation.render_board(assignments, cards, roster, preferences),
             ),
+            *_assigned_dms(assignments, members),
         ),
         state=clear(state),
         save_assignments=tuple(record.to_dict() for record in assignments),
     )
+
+
+def _assigned_dms(assignments, members) -> list[Reply]:
+    """结算后给**每个人**私聊一条"你手上是…"（D-70）。
+
+    动机：总表只发群，组员得自己去群里翻；而且他未必知道"怎么标完成"。
+    主动私聊一句，既省掉"我到底分到啥"这一问，也顺手教会了「完成 T3」的写法。
+    发不出去的由 app 层的 `_report_dm_failures` 在群里点名（P0-C），不会静默消失。
+    """
+    by_person: dict[str, list] = {}
+    for record in assignments or ():
+        by_person.setdefault(record.assignee, []).append(record)
+    out: list[Reply] = []
+    for member in members or ():
+        mine = by_person.get(member.open_id) or []
+        if not member.open_id or not mine:
+            continue                      # 没分到卡的人不发（§2.4 ⑤：不硬塞，也不打扰）
+        tasks = "、".join(record.task_id for record in mine)
+        out.append(
+            Reply(
+                chat_id=member.open_id,
+                text=replies.ASSIGNED_DM.format(tasks=tasks, first=mine[0].task_id),
+                receive_id_type="open_id",
+            )
+        )
+    return out
+
 
 
 # ---------- 小工具 ----------

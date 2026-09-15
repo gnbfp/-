@@ -38,6 +38,8 @@ __all__ = [
     "COMPLETE_MINE_NONE",
     "COMPLETE_OK",
     "COMPLETE_ALREADY",
+    "COMPLETE_HOWTO",
+    "ASSIGNED_DM",
     "REMIND_DUE",
     "REMIND_OVERDUE",
     "REPORT_NEED_GROUP",
@@ -80,8 +82,10 @@ COMMAND_LIST_TEXT = (
     "5. 我想提议：… —— 私聊我发这句，我匿名转达\n"
     "6. 完成 T3 —— 私聊我发这句，标记任务完成\n"
     "7. 登记 —— 群里发「登记」，按我回的表单 @ 人建花名册\n"
-    "8. 报告 —— 组长在群里发这句，我把执行报告 + 甘特图发群"
+    "8. 报告 —— 组长在群里发这句，我把执行报告 + 甘特图发群\n"
+    "在群里请先 @我 再说指令（不 @ 我我就当大家在聊天，不回话）；私聊不用 @。"
 )
+
 
 # ---- 作业书 / 拆解 主链路 ----
 FILE_RECEIVED = "已收到文件：{name}。回复「作业书」我来解析。"
@@ -131,6 +135,14 @@ COMPLETE_MINE = "你手上的是：{tasks}。"
 COMPLETE_MINE_NONE = "你手上现在没有任务卡。"
 COMPLETE_OK = "已标记完成：{task_id}（{module}）。"
 COMPLETE_ALREADY = "{task_id} 之前就标过了（{at}），我没改时间。"
+# 无参「完成」的回话（D-70）：菜单只放一格，编号由机器人当场报出来。
+COMPLETE_HOWTO = (
+    "你手上是：{tasks}。\n"
+    "做完就私聊我发「完成 {first}」这样的指令（把编号换成你要标的那张卡）。{done}"
+)
+# M4 结算后主动私聊每人一条（D-70）—— 省掉"我到底分到啥"这一问。
+ASSIGNED_DM = "分配好了：你手上是 {tasks}。\n做完就私聊我发「完成 {first}」标完成；想改志愿就再发一次序号。"
+
 
 # ---- M6 临期催办（§2.2；两档 = 待定义-35，逾期档 = D-66）----
 # ``{at}`` 是飞书的 @ 语法 ``<at user_id="ou_x"></at>``，写成纯文本 @某人 不会真 @。

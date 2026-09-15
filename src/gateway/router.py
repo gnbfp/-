@@ -40,6 +40,8 @@ __all__ = [
 # 7 条前缀里两条带变体：提议的冒号全半角、完成的 Tn 容忍空格与大小写。
 PROPOSAL_PREFIXES = ("我想提议：", "我想提议:")
 COMPLETE_PATTERN = re.compile(r"^完成\s*[Tt](\d+)\s*$")
+# 无参「完成」= "我该标哪张？"（D-70）：菜单里只放一格，卡片编号由机器人当场列出来。
+COMPLETE_BARE = re.compile(r"^完成\s*$")
 
 _MENTION_PLACEHOLDER = re.compile(r"@_user_\d+")
 
@@ -61,6 +63,26 @@ def strip_mentions(text: str, mentions: Sequence[Mention] = ()) -> str:
     return _MENTION_PLACEHOLDER.sub("", text or "")
 
 
+def _mentioned_bot(inbound: Inbound, bot_open_id: str = "", bot_name: str = "") -> bool:
+    """这条消息 @ 的是不是**机器人自己**（D-69）。
+
+    判据优先级：
+      ① mentions 里的 ``open_id`` 命中机器人自身 open_id（最准，app 层启动时取一次）；
+      ② 退一步比 ``name``（同名成员的概率可忽略）；
+      ③ **两个标识都拿不到 → 放行**：宁可漏拦，不可让机器人突然变哑巴
+         （启动时那一次 ``bot/v3/info`` 失败就走这条，并在 app 层打一行告警）。
+    """
+    mentions = tuple(getattr(inbound, "mentions", ()) or ())
+    if not bot_open_id and not bot_name:
+        return True
+    for mention in mentions:
+        if bot_open_id and getattr(mention, "open_id", "") == bot_open_id:
+            return True
+        if bot_name and getattr(mention, "name", "") == bot_name:
+            return True
+    return False
+
+
 def route(
     inbound: Inbound,
     state: dict,
@@ -72,6 +94,8 @@ def route(
     assignments: Sequence = (),
     now: datetime | None = None,
     source_title: str = "",
+    bot_open_id: str = "",
+    bot_name: str = "",
 ) -> Outcome:
     """一条消息 → 一个 Outcome。顺序严格按 D-33：剥 @段 → 状态 → 前缀 → 兜底。
 
@@ -80,6 +104,9 @@ def route(
     传进的是**数据**不是**路径**，所以这一整套规则照样能离线全量单测。
     ``has_rubric`` 由 app 层从 ``data/rubric.json`` 读出来传进来 —— router 自己不读文件，
     但仍然能对「拆解」给出正确回复（没有评分点 vs 重跑）。
+
+    ``bot_open_id`` / ``bot_name`` 是**机器人自己**的标识（app 层启动时取一次，D-69）：
+    群消息要用它判"这条 @ 的是不是我"。两个都为空 = 取不到 ⇒ **宽松放行**。
 
     **重活也在这里判**（``Outcome.pipeline``）：回什么话与起不起 M1/M3 必须同源，
     分两处判就会出现"回了「表单没看懂」却照样烧一次 LLM"（必修 4）。
@@ -90,14 +117,26 @@ def route(
         return Outcome()
 
     # 1. 文件：只缓存，不干活（D-42：文字和附件必然是两条消息）
+    #    **免 @ 门**：飞书不允许"文字 + 附件"同一条，所以发文件时没法同时 @（D-69）。
     if inbound.message_type == "file":
         return remember_file(inbound, state, now)
     #    图片：读不了就直说（用户 2026-09-12 拍板，不再静默），但仍然**不入缓存** ——
     #    必修 3 的底线是"一张图不能把刚发来的作业书 PDF 挤掉"。其余类型保持静默。
+    #    同样是**免 @ 门**：图片也发不出 @，且这句是"纠正格式"，不是闲聊兜底（D-69）。
     if inbound.message_type == "image":
         return Outcome(replies=(reply(inbound, replies.IMAGE_REJECTED),))
     if inbound.message_type != "text":
         return Outcome()
+
+    # 1.5 【群里的文字消息必须 @机器人】（§8.1 备选 1 → D-69）
+    #     动机：群里不 @ 就响应的话，组员讨论时打的指令词/数字会被误触发。
+    #     例外：登记表单（要 @ 组员，形状见 register.looks_like_form）。
+    #     私聊不受影响；机器人的消息在第 0 步已经滤掉。
+    if inbound.chat_type == "group" and not _mentioned_bot(
+        inbound, bot_open_id, bot_name
+    ):
+        if not register.looks_like_form(inbound):
+            return Outcome()               # 没 @ 我 → 静默丢弃，一个字都不回
 
     text = strip_mentions(inbound.text, inbound.mentions).strip()
     if not text:
@@ -238,6 +277,10 @@ def _by_prefix(
     if match:
         # 编号由 router 捕获（判定只有一处），剩下的"是不是你的卡 / 标没标过"归 M6
         return complete.accept(match.group(1), inbound, assignments, cards, now)
+    if COMPLETE_BARE.match(text):
+        # 无参「完成」（D-70）：机器人列出**他自己**名下的卡 + 该怎么标。
+        # 菜单只放一格，具体编号由机器人当场报出来 —— 卡数再多也不怕。
+        return complete.list_mine(inbound, assignments, cards)
     if text.startswith("登记"):
         return register.register_begin(inbound, state, now, roster)
     if text.startswith("报告"):
