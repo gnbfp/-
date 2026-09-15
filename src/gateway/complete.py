@@ -21,7 +21,42 @@ from src.gateway import replies
 from src.gateway.events import Inbound, Outcome, reply
 from src.models import AssignmentRecord, TaskCard
 
-__all__ = ["accept"]
+__all__ = ["accept", "list_mine"]
+
+
+def list_mine(
+    inbound: Inbound,
+    assignments: Sequence[AssignmentRecord] = (),
+    cards: Sequence[TaskCard] = (),
+) -> Outcome:
+    """无参「完成」→ **列出他自己名下的卡 + 该怎么标**（D-70）。
+
+    为什么要有这条：菜单项只能发一句固定文本，而任务卡是**动态**的（换个作业书就是全新编号）
+    —— 每张卡配一个菜单项既放不下、又要每次回后台改菜单 + 发版。所以菜单只留一格，
+    具体的编号由机器人当场报出来。**不引入新状态机**：只回一句提示，用户照抄即可。
+    """
+    if inbound.chat_type != "p2p":
+        return Outcome(replies=(reply(inbound, replies.COMPLETE_NEED_DM),))
+
+    mine = [r for r in (assignments or ()) if r.assignee == inbound.sender_open_id]
+    if not mine:
+        return Outcome(replies=(reply(inbound, replies.COMPLETE_NEED_ASSIGNMENTS),))
+
+    done = [r.task_id for r in mine if r.completed_at]
+    pending = [r.task_id for r in mine if not r.completed_at]
+    first = (pending or [r.task_id for r in mine])[0]
+    return Outcome(
+        replies=(
+            reply(
+                inbound,
+                replies.COMPLETE_HOWTO.format(
+                    tasks=_render_tasks(mine, cards),
+                    first=first,
+                    done=("已完成：" + "、".join(done) + "。" if done else ""),
+                ),
+            ),
+        )
+    )
 
 
 def accept(
@@ -85,9 +120,20 @@ def _module_name(task_id: str, cards: Sequence[TaskCard]) -> str:
     return task_id
 
 
+def _render_tasks(mine: Sequence[AssignmentRecord], cards: Sequence[TaskCard]) -> str:
+    """``T3（模块）、T5（模块）`` —— 只给卡本身，不带前后缀（D-70 的列表要复用）。
+
+    已完成的卡在后面加一个勾，和 M7 的核对清单同一套记号。
+    """
+    return "、".join(
+        f"{r.task_id}（{_module_name(r.task_id, cards)}）{'✓' if r.completed_at else ''}"
+        for r in mine
+    )
+
+
 def _render_mine(mine: Sequence[AssignmentRecord], cards: Sequence[TaskCard]) -> str:
     """``你手上的是：…`` —— 说"不是你的"时必须给出他真正能标的那些卡。"""
     if not mine:
         return replies.COMPLETE_MINE_NONE
-    tasks = "、".join(f"{r.task_id}（{_module_name(r.task_id, cards)}）" for r in mine)
-    return replies.COMPLETE_MINE.format(tasks=tasks)
+    return replies.COMPLETE_MINE.format(tasks=_render_tasks(mine, cards))
+

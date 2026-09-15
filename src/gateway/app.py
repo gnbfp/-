@@ -136,6 +136,45 @@ class Gateway:
         self.sender = sender
         self.downloader = downloader
         self._llm_client = llm_client
+        # 机器人自身标识（@ 门，D-69）：启动后**懒加载一次**，取不到就留空 → router 宽松放行。
+        self._bot_open_id = ""
+        self._bot_name = ""
+        self._bot_identity_ready = False
+
+    # ---------- 机器人自身标识（@ 门，D-69）----------
+
+    def _bot_identity(self) -> tuple[str, str]:
+        """``(bot_open_id, bot_name)``；只取一次，之后走缓存。
+
+        sender 没有 ``bot_info``（单测夹具）或调用失败 → 返回两个空串，
+        router 见到空标识会**宽松放行**（群里不带 @ 也照旧处理）。
+        """
+        if self._bot_identity_ready:
+            return self._bot_open_id, self._bot_name
+        self._bot_identity_ready = True
+
+        probe = getattr(self.sender, "bot_info", None)
+        if not callable(probe):
+            print(f"[M0] {_stamp()} 取不到机器人标识：sender 没有 bot_info()（@ 门宽松放行）")
+            return "", ""
+        try:
+            info = probe() or {}
+        except Exception as exc:                      # 一次网络抖动不能让机器人变哑巴
+            print(
+                f"[M0] {_stamp()} 取机器人标识失败：{type(exc).__name__}: {exc}"
+                "（@ 门宽松放行：群里不带 @ 也会处理）"
+            )
+            return "", ""
+        self._bot_open_id = str(info.get("open_id") or "")
+        self._bot_name = str(info.get("app_name") or "")
+        if not self._bot_open_id and not self._bot_name:
+            print(f"[M0] {_stamp()} 机器人标识为空（@ 门宽松放行）")
+        else:
+            print(
+                f"[M0] {_stamp()} 机器人标识：open_id={self._bot_open_id or '(未知)'} "
+                f"name={self._bot_name or '(未知)'} —— 群消息只认 @ 到它的"
+            )
+        return self._bot_open_id, self._bot_name
 
     # ---------- 飞书回调入口 ----------
 
@@ -170,6 +209,7 @@ class Gateway:
         state = self.store.load_state()
         has_rubric = bool(self.store.load_rubric())
         meta = self.store.load_assignment()
+        bot_open_id, bot_name = self._bot_identity()
         outcome = route(
             inbound,
             state,
@@ -179,6 +219,8 @@ class Gateway:
             preferences=self.store.load_preferences(),
             assignments=self.store.load_assignments(),
             source_title=meta.title if meta else "",
+            bot_open_id=bot_open_id,
+            bot_name=bot_name,
         )
         failures = self._deliver(outcome)
         # 主动私聊发不出去要说出来（P0-C）：否则"群里说清单已发、实际没人收到"。

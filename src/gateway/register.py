@@ -26,6 +26,7 @@ __all__ = [
     "REGISTER_TTL",
     "REGISTER_CANCEL_WORDS",
     "is_cancel",
+    "looks_like_form",
     "classify",
     "register_begin",
     "register_step",
@@ -40,6 +41,18 @@ REGISTER_CANCEL_WORDS = ("取消登记", "取消")
 # 表单行的形状：「组长：…」「组员：…」各自**独占一行**。
 # 必须与 _section() 的解析口径一致，否则会出现「接管了却解析不出来」。
 _FORM_LINE = re.compile(r"^[ \t]*(组长|组员)[ \t]*[:：]", re.M)
+
+
+def looks_like_form(inbound) -> bool:
+    """这条消息像不像登记表单（D-45 的形状）：**带 @** 且含独占一行的「组长：/组员：」。
+
+    给 router 的「群里必须 @机器人」那道门用（D-69）：表单必须 @ **组员**，
+    而飞书一条消息只能 @ 固定那几个人，再要求同时 @ 机器人等于让组长手工拼两遍；
+    所以**表单豁免 @ 门**。判定只认形状、不认窗口状态 —— 闲聊里不会自发写出这种独占行。
+    """
+    return bool(getattr(inbound, "mentions", ())) and bool(
+        _FORM_LINE.search(getattr(inbound, "text", "") or "")
+    )
 
 
 def register_begin(

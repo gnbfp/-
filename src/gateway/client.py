@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+import urllib.request
 from pathlib import Path
 
 from src.gateway.events import Reply
@@ -17,6 +18,12 @@ from src.gateway.events import Reply
 __all__ = ["FeishuError", "FeishuClient"]
 
 _BAD_NAME_CHARS = ':*/?"<>|\\'
+
+# 「机器人自身信息」的两个 HTTP 端点（D-69）。这个 SDK 版本只有 bot.service / bot.v4，
+# **没有 bot.v3 封装**，所以这里直接打 HTTP —— 实测已通过（code=0，返回 app_name + open_id）。
+_TOKEN_URL = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
+_BOT_INFO_URL = "https://open.feishu.cn/open-apis/bot/v3/info"
+
 
 
 class FeishuError(RuntimeError):
@@ -58,6 +65,53 @@ class FeishuClient:
                 .build()
             )
         return self._api_client
+
+    # ---------- 机器人自身信息（@ 门要用，D-69）----------
+
+    def bot_info(self) -> dict:
+        """``{"open_id": "ou_…", "app_name": "喵喵喵"}``；取不到返回 ``{}``。
+
+        用途：群里"这条 @ 的是不是我"，最准的判据是**机器人自己的 open_id**
+        （``mentions[].id.open_id`` 与它比对）。启动时取一次即可。
+
+        **失败一律返回空 dict、不抛**：调用方按"宽松放行"降级 ——
+        宁可偶尔误触发，也不能让机器人因为一次网络抖动变成哑巴（D-69 ③）。
+        """
+        def post_json(url: str, payload: dict, headers: dict | None = None) -> dict:
+            request = urllib.request.Request(
+                url,
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json", **(headers or {})},
+            )
+            with urllib.request.urlopen(request, timeout=15) as response:
+                return json.loads(response.read().decode("utf-8"))
+
+        try:
+            token_payload = post_json(
+                _TOKEN_URL,
+                {
+                    "app_id": self.config.feishu_app_id,
+                    "app_secret": self.config.feishu_app_secret,
+                },
+            )
+            token = token_payload.get("tenant_access_token") or ""
+            if not token:
+                return {}
+            # GET 也要带 body：urllib 的 Request 用 data=None + method="GET"
+            request = urllib.request.Request(
+                _BOT_INFO_URL,
+                headers={"Authorization": f"Bearer {token}"},
+                method="GET",
+            )
+            with urllib.request.urlopen(request, timeout=15) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except Exception:
+            return {}
+        bot = payload.get("bot") or {}
+        return {
+            "open_id": str(bot.get("open_id") or ""),
+            "app_name": str(bot.get("app_name") or ""),
+        }
 
     # ---------- 发消息 ----------
 

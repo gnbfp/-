@@ -207,8 +207,32 @@ def test_settles_immediately_when_everyone_has_submitted():
     assert outcome.state["awaiting"] is None
     assert [record["task_id"] for record in outcome.save_assignments] == ["T1", "T2", "T3"]
     assert _texts(outcome)[0] == replies.PREFERENCE_SAVED.format(tasks="T3")
-    assert outcome.replies[-1].chat_id == GROUP                # 总表发群
-    assert "分配总表" in outcome.replies[-1].text
+    # 总表仍然是**第一条**发群（D-70 之后它后面还跟着"每人一条私聊"）
+    board = next(r for r in outcome.replies if r.chat_id == GROUP)
+    assert "分配总表" in board.text
+    assert board is outcome.replies[1]                        # 回执 → 总表 → 各人私聊
+
+
+def test_settlement_dms_everyone_their_own_tasks():
+    """D-70：结算后**每人**私聊一条"你手上是…"，省掉"我到底分到啥"这一问。"""
+    existing = [
+        Preference("ou_zhang", ["T1"], "2026-09-13T09:01:00"),
+        Preference("ou_li", ["T2"], "2026-09-13T09:02:00"),
+    ]
+    outcome = route(
+        _private("3", sender="ou_wang"),
+        _state(),
+        _roster(),
+        cards=_cards(),
+        preferences=existing,
+        now=OPEN,
+    )
+    dms = [r for r in outcome.replies if r.receive_id_type == "open_id"]
+    assert {r.chat_id for r in dms} == {"ou_zhang", "ou_li", "ou_wang"}
+    for message in dms:
+        assert "你手上是" in message.text
+        assert "完成 " in message.text                        # 顺手教会了怎么标完成
+
 
 
 def test_leader_resend_with_no_submissions_only_reshows_the_list():
