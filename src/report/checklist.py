@@ -76,7 +76,12 @@ def render_checklist(
         lines.append(f"      原文：{point.quote}")
 
     balance = balance_loop(cards)
-    if coverage.eligible:
+    # 无评分点模式（口径 A，2026-09-16）：有卡、但一个评分点都没有 ⇒ 覆盖率**没有分母**。
+    # 显式写「不适用」，绝不把它渲染成 0% 或 100% —— 那是两件都不真实的事。
+    body_mode = result.mode == "body" or (not coverage.eligible and bool(cards))
+    if body_mode:
+        coverage_line = "覆盖率：不适用（无评分点模式 —— 卡片来自正文交付要求，没有评分点可作分母）"
+    elif coverage.eligible:
         coverage_line = (
             f"覆盖率：{len(coverage.covered)}/{len(coverage.eligible)} = {coverage.ratio:.0%}"
             "（循环口径：分母 = status=normal 的可拆点）"
@@ -93,6 +98,8 @@ def render_checklist(
     lines += ["", coverage_line, balance_line]
     if result.failures:
         lines.append("自检未达标（按 D-18 交人决定）：" + "；".join(result.failures))
+    elif body_mode:
+        lines.append("自检通过：任务卡非空、工时均衡、依赖无环（无评分点模式不判覆盖率）。")
     else:
         lines.append("自检通过：可拆评分点全覆盖、工时均衡。")
     return "\n".join(lines)

@@ -32,9 +32,13 @@ __all__ = [
     "PROPOSAL_PREFIXES",
     "COMPLETE_PATTERN",
     "PENDING_FILE_TTL",
+    "NO_RUBRIC_TTL",
     "strip_mentions",
     "route",
     "remember_file",
+    "no_rubric_block",
+    "no_rubric_expired",
+    "confirm_no_rubric",
 ]
 
 # 7 条前缀里两条带变体：提议的冒号全半角、完成的 Tn 容忍空格与大小写。
@@ -52,6 +56,9 @@ _MENTION_PLACEHOLDER = re.compile(r"@_user_\d+")
 # 而唯一的清除时机是「作业书」跑完 —— 所以"发过文件、没接着说「作业书」"的残留会一直留着，
 # 跨场次录制时会静默复用一份旧作业书。30 分钟对一场演示足够，只拦跨场次串味。
 PENDING_FILE_TTL = timedelta(minutes=30)
+# 无评分点模式的确认窗口（口径 A，2026-09-16）。与登记窗口同款 5 分钟：组长看到
+# "我没找到评分标准"那句话之后，回来补一句「按正文拆」就够了；过期就当没有。
+NO_RUBRIC_TTL = timedelta(minutes=5)
 
 
 def strip_mentions(text: str, mentions: Sequence[Mention] = ()) -> str:
@@ -335,6 +342,10 @@ def _by_prefix(
         if guard is not None:
             return guard
 
+    # 无评分点模式（口径 A，2026-09-16）：第 10 条指令，只认组长 + 只认原会话 + 窗口 5 分钟。
+    if text.startswith("按正文拆"):
+        return confirm_no_rubric(inbound, state, roster, now)
+
     if text.startswith("作业书"):
         return _assignment(inbound, state, now)
     if text.startswith("拆解"):
@@ -524,3 +535,69 @@ def _stale_pending(pending: dict, now: datetime | None = None) -> bool:
     except ValueError:
         return False                      # 时间戳脏了就当没有 TTL，别因脏数据把文件丢掉
     return (now or datetime.now()) - received > PENDING_FILE_TTL
+
+
+# ---------- 无评分点模式：待确认窗口（口径 A，2026-09-16）----------
+#
+# 背景：作业书里没有评分标准时，M1 返回空 rubric，**默认仍然拒拆**（D-48 不改，
+# 也不拿正文要求凑数）。但人可以拍板走另一条路：组长确认后，从正文的交付要求拆一版，
+# 卡片显式标注"来自正文要求、不是评分点"。拍板权在人（B9），机器不自动硬拆
+# （S13：发一篇新闻进来也不该被拆成任务卡）。
+
+
+def no_rubric_block(path, meta, inbound: Inbound, now: datetime | None = None) -> dict:
+    """建一个"等我确认"的无评分点窗口（写进 ``state.no_rubric``）。
+
+    只缓存**文件路径 + 作业元信息**（都很小）：正文确认时重抽一次就行
+    （``extract_text`` 是纯函数、不花 token），不必把几万字塞进 ``state.json``。
+    ``meta`` 必须留着 —— 拒拆时按 D-49 ② **一个字都不落盘**，确认之后要拿它渲染清单。
+    """
+    moment = now or datetime.now()
+    name = str(path).replace("\\", "/").rsplit("/", 1)[-1]
+    return {
+        "path": str(path),
+        "file_name": name,
+        "meta": meta.to_dict(),
+        "chat_id": inbound.chat_id,
+        "opened_at": moment.isoformat(timespec="seconds"),
+        "expires_at": (moment + NO_RUBRIC_TTL).isoformat(timespec="seconds"),
+    }
+
+
+def no_rubric_expired(block: dict, now: datetime | None = None) -> bool:
+    """窗口过期了没。时间戳脏了当没过期（与 ``_stale_pending`` 同款防御，别因脏数据卡死人）。"""
+    raw = (block or {}).get("expires_at")
+    if not raw:
+        return False                      # 老 state 没有这个字段：不因此失效
+    try:
+        expires = datetime.fromisoformat(str(raw))
+    except ValueError:
+        return False
+    return (now or datetime.now()) >= expires
+
+
+def confirm_no_rubric(
+    inbound: Inbound, state: dict, roster, now: datetime | None = None
+) -> Outcome:
+    """「按正文拆」：组长确认 → 走无评分点模式（口径 A，2026-09-16）。
+
+    三重校验，缺一不可：
+      ① **只认组长** —— 与「报告」「封盘」同款：会整份覆盖产物的动作由组长拍板；
+         非成员/认不出的人当然也过不了这一关。
+      ② **必须在收到那份文件的会话里发** —— 与「作业书」的会话校验（D-47）同款，
+         否则 A 群里的人能替 B 会话里投的那份文件拍板。
+      ③ **窗口未过期**（``NO_RUBRIC_TTL``）—— 过期就当没有，让人重新走一遍「作业书」。
+
+    判定与执行同源：这里只决定"起不起"（``pipeline="no_rubric"``），
+    真正的重活在 app 层 —— 不会出现"回了「收到，正在拆」却什么都没跑"。
+    """
+    if not inbound.sender_open_id or inbound.sender_open_id != getattr(roster, "leader", None):
+        return Outcome(replies=(reply(inbound, replies.NO_RUBRIC_NEED_LEADER),))
+    block = (state or {}).get("no_rubric") or {}
+    if not block or no_rubric_expired(block, now):
+        return Outcome(replies=(reply(inbound, replies.NO_RUBRIC_NO_PENDING),))
+    if block.get("chat_id") and block["chat_id"] != inbound.chat_id:
+        return Outcome(replies=(reply(inbound, replies.NO_RUBRIC_NO_PENDING),))
+    return Outcome(
+        replies=(reply(inbound, replies.NO_RUBRIC_STARTED),), pipeline="no_rubric"
+    )

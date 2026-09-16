@@ -23,12 +23,17 @@ from datetime import datetime
 from pathlib import Path
 
 from src.config import ConfigError, load_config
-from src.gateway import allocation, reminder, replies, vote
+from src.gateway import allocation, reminder, replies, router, vote
 from src.gateway.client import FeishuClient
 from src.gateway.events import ImageOut, Inbound, Outcome, Reply, reply, to_inbound
 from src.gateway.router import route
 from src.intelligence.coverage import coverage_loop
-from src.intelligence.decompose import DecomposeResult, check, decompose
+from src.intelligence.decompose import (
+    DecomposeResult,
+    check,
+    decompose,
+    decompose_from_body,
+)
 from src.intelligence.direction import generate_directions
 from src.intelligence.extract import (
     ExtractError,
@@ -40,7 +45,7 @@ from src.intelligence.extract import (
 )
 from src.intelligence.llm import LLMClient, LLMError
 from src.intelligence.parse import parse_assignment
-from src.models import AssignmentRecord, Preference, Roster
+from src.models import AssignmentMeta, AssignmentRecord, Preference, Roster
 from src.report.checklist import render_checklist
 from src.report.gantt import render_gantt
 from src.storage import (
@@ -444,6 +449,8 @@ class Gateway:
                 self._run_direction(inbound)
             elif kind == "report":
                 self._run_report(inbound)
+            elif kind == "no_rubric":
+                self._run_no_rubric(inbound, state)
         except ExtractError as exc:
             self._send(reply(inbound, replies.EXTRACT_REJECTED.format(reason=exc)))
         except LLMError:
@@ -454,6 +461,8 @@ class Gateway:
             if kind == "assignment":
                 pending = (state or {}).get("pending_file") or {}
                 self._forget_pending_file(pending.get("message_id", ""))
+            elif kind == "no_rubric":
+                self._forget_no_rubric()
 
     def _run_assignment(self, inbound: Inbound, state: dict) -> None:
         """作业书 → 下载 → 抽文本 → M1 → **必须续跑 M3** → 核对清单发群（方案 §7）。"""
@@ -465,7 +474,12 @@ class Gateway:
 
         # 空 rubric：M1 全文没找到评分标准（D-48）→ 不跑 M3、不拿正文要求凑数，
         # 也**一个字都不落盘** —— 否则拒拆会把上一份好产物清空（D-49 ②）。
+        # 但把"还有一条路"告诉人，并开一个 5 分钟的确认窗口（口径 A，2026-09-16）：
+        # 只缓存**文件路径 + 元信息**（正文确认时重抽一次就行），等组长回「按正文拆」。
         if not parsed.points:
+            state = self.store.load_state() or {}
+            state["no_rubric"] = router.no_rubric_block(path, parsed.meta, inbound)
+            self.store.save_state(state)
             self._send(reply(inbound, replies.NO_RUBRIC_FOUND))
             return
 
@@ -493,6 +507,53 @@ class Gateway:
         if warnings:
             report += "\n\n" + "\n".join(f"[软警告] {w}" for w in warnings)
         self._send(reply(inbound, report))
+
+    def _run_no_rubric(self, inbound: Inbound, state: dict) -> None:
+        """「按正文拆」（口径 A，2026-09-16）：从正文的交付要求建卡。
+
+        前提：组长已在**原会话**里确认过（三重校验在 ``router.confirm_no_rubric``）。
+        这里只干重活：
+          * 重新抽一次文本（``extract_text`` 是纯函数、不花 token）；
+          * 走 M3 的**无评分点模式**（``decompose_from_body`` —— 仍是 B2 的第三处 LLM 点，
+            没有新增调用点）；
+          * 三份产物**一起**落盘（F2）：``rubric.json`` 显式写空数组 —— 空数组本身就是
+            "无评分点模式"的落盘标记，不新增字段。
+        """
+        block = (state or {}).get("no_rubric") or {}
+        path = Path(block.get("path") or "")
+        if not block or not path.is_file():
+            # 文件没了（例如按 D-57 清过 data/）→ 老实说，不硬拆
+            self._send(reply(inbound, replies.NO_RUBRIC_NO_PENDING))
+            return
+
+        meta = AssignmentMeta.from_dict(block["meta"])
+        text = extract_text(path)
+        result = decompose_from_body(text, self._llm())
+
+        self.store.save_assignment(meta)
+        self.store.save_rubric([])                    # 空数组 = 无评分点模式的标记
+        self.store.save_cards(list(result.cards))
+
+        report = render_checklist(meta, [], result.cards, result)
+        warnings = [
+            w
+            for w in (
+                check_weight_sum([]),
+                check_radical_residue(text),
+                check_deadline(meta),
+                check_meta_fields(meta),
+            )
+            if w
+        ]
+        if warnings:
+            report += "\n\n" + "\n".join(f"[软警告] {w}" for w in warnings)
+        self._send(reply(inbound, report))
+
+    def _forget_no_rubric(self) -> None:
+        """清掉无评分点窗口 —— 本轮消费完就清（与 ``_forget_pending_file`` 同款）。"""
+        state = self.store.load_state() or {}
+        if state.pop("no_rubric", None) is not None:
+            self.store.save_state(state)
 
     def _run_decompose(self, inbound: Inbound) -> None:
         """「拆解」：用现有评分点重跑 M3，再出一份核对清单。"""
@@ -559,11 +620,17 @@ class Gateway:
         cards = self.store.load_cards()
         assignments = self.store.load_assignments()
         roster = self.store.load_members()
-        if meta is None or not points or not cards or not assignments:
+        # 无评分点模式（口径 A，2026-09-16）下 rubric.json 本来就是空数组 ⇒
+        # "没有 points"**不算缺产物**；真正缺的是卡 / 分配 / 作业书元信息。
+        body_mode = not points
+        if meta is None or not cards or not assignments:
             self._send(reply(inbound, replies.REPORT_NEED_ASSIGNMENTS))
             return
         result = DecomposeResult(
-            cards=tuple(cards), failures=tuple(check(cards, points)), generations=0
+            cards=tuple(cards),
+            failures=tuple(check(cards, points, allow_empty_rubric=body_mode)),
+            generations=0,
+            mode="body" if body_mode else "rubric",
         )
         try:
             gantt = render_gantt(cards, assignments, meta, self.store.path(GANTT), roster)
