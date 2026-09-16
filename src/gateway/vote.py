@@ -43,6 +43,7 @@ __all__ = [
     "close_expired",
     "settle",
     "clear",
+    "discarded_note",
 ]
 
 VOTE_TTL = timedelta(minutes=10)
@@ -71,6 +72,36 @@ def read_window(state: dict, now: datetime | None = None) -> tuple[dict, bool]:
 def clear(state: dict) -> dict:
     """关掉投票窗口（``awaiting`` 与 ``vote`` 一起清）—— 裸数字立刻不再被当票。"""
     return {**(state or {}), "awaiting": None, "vote": None}
+
+
+def discarded_note(block: dict, now: datetime | None = None) -> str:
+    """窗口**没落定就被别的指令顶掉**时，要补的那句话；返回 ``""`` = 没什么好交代的。
+
+    什么时候该说话（2026-09-16 真机发现，D-61 补注）：
+
+      * 窗口开着（没过期、没冻住）**且已经有人投过票** ⇒ 报票数明细 + 说清"作废、要定就重开"。
+        这一条是真机踩出来的：三人各投 1/2/3 ⇒ 无过半；紧接着一句「你想做哪一块」切到 M4，
+        `state.vote` 被整块清掉，群里**一句交代都没有**，`data/direction.json` 也从没落盘。
+        D-61 ③ 的关闭三条（过半 / 超时 / 封盘）当时都不适用 ⇒ 这是它没定义的那个转移。
+
+    什么时候不用说话：
+
+      * 没窗口、或一张票都没有 ⇒ 没有"谁的票被作废"这回事；
+      * 已超时冻住（``closed``）⇒ 收口那条 `VOTE_TIMEOUT` 已经报过明细了，别重复刷屏；
+      * 已过期但还没收口 ⇒ 那是超时路径的活（``close_expired``），也不在这里抢话。
+
+    ``now`` 与 ``read_window`` 同款：为了"过期与否"可注入、单一判据。
+    """
+    block = dict(block or {})
+    if not block or block.get("closed"):
+        return ""
+    if not dict(block.get("votes") or {}):
+        return ""
+    if _expired(block, now):
+        return ""
+    return replies.VOTE_DISCARDED.format(
+        tally=_render_tally(dict(block.get("votes") or {}), _candidates(block))
+    )
 
 
 def command(
