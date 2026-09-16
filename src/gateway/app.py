@@ -371,16 +371,28 @@ class Gateway:
     # ---------- M4 / M5 的落盘 ----------
 
     def _remember_group(self, inbound: Inbound) -> None:
-        """任何群消息都刷新 ``state.group_chat_id``（D-54）。
+        """群消息刷新 ``state.group_chat_id``（D-54）—— **但只认本场的群**（多群隔离，§1.10）。
 
         M4 的清单 / 总表、M5 的匿名转达都要**主动发到群**，而 router 是纯函数、不读
         文件 —— 所以"群是哪个"由 app 层记进 state。机器人自己的消息不算：那是回声，
         不是"群里有人在活动"。
+
+        ⚠️ 原来这里"**任何**群消息都刷新"（注释还写着"单群假设 D-57"），一旦机器人被拉进
+        第二个群，那个群里**任何人说一句话**（不用 @、不用是组员）就把广播目标改过去了 ——
+        实测：组员甲的匿名提议发到了别的群、本群什么都没看到（§1.10 a/b）。
+        现在要求 ``group_allowed()``（登记过的群 / 正在登记的那个群；还没认过群时保持原行为），
+        别的群只留一行日志。
         """
         if inbound.sender_type == "app" or inbound.chat_type != "group" or not inbound.chat_id:
             return
         state = self.store.load_state()
         if state.get("group_chat_id") == inbound.chat_id:
+            return
+        if not router.group_allowed(state, inbound.chat_id):
+            print(
+                f"[M0] {_stamp()} 群 {inbound.chat_id} 不是本场的群，"
+                f"不拿它当广播目标（本场：{'/'.join(router.known_group_ids(state)) or '未认下'}）"
+            )
             return
         state["group_chat_id"] = inbound.chat_id
         self.store.save_state(state)
@@ -752,10 +764,20 @@ class Gateway:
         self._reset_state_keep_group()
 
     def _reset_state_keep_group(self) -> None:
-        """state.json 只留"已认下的群"，其余（窗口 / 票 / 志愿块）清空。"""
+        """state.json 只留"已认下的群"，其余（窗口 / 票 / 志愿块）清空。
+
+        多群隔离（§1.10）：``known_groups`` 和 ``group_chat_id`` **一起留** ——
+        只留后者的话，重置一次就把"本场是哪个群"这条记录弄丢了，保护会退回宽松档。
+        """
         state = self.store.load_state() or {}
         keep_group = state.get("group_chat_id") or ""
-        self.store.save_state({"group_chat_id": keep_group} if keep_group else {})
+        kept: dict = {}
+        if keep_group:
+            kept["group_chat_id"] = keep_group
+        groups = [g for g in (state.get("known_groups") or []) if g]
+        if groups:
+            kept["known_groups"] = groups
+        self.store.save_state(kept)
 
     def _forget_reset(self) -> None:
         """清掉待确认的重置窗口（只在"盘上本来就干净、不用重置"时用）。"""
@@ -936,12 +958,17 @@ class Gateway:
     def scan_reminders(self, now: datetime | None = None) -> list:
         """M6 临期扫描一轮（§2.2）：发群 @负责人，成败都记 ``data/reminders.json``。
 
-        群取 ``state.group_chat_id``（单群假设 D-57）；取不到就跳过并打一行日志 ——
-        **宁可漏催，不可把 @ 发到错误的群**。去重靠 ``(task_id, tier)``（见 ``reminder.scan``）。
+        群取 ``state.group_chat_id``（D-54 / D-57）；取不到、或**不是本场的群**就跳过并打一行
+        日志 —— **宁可漏催，不可把 @ 发到错误的群**（多群隔离，§1.10）。
+        去重靠 ``(task_id, tier)``（见 ``reminder.scan``）。
         """
-        group = (self.store.load_state() or {}).get("group_chat_id") or ""
+        state = self.store.load_state() or {}
+        group = state.get("group_chat_id") or ""
         if not group:
             print(f"[M6] {_stamp()} 催办跳过：还不知道群是哪个（先让群里有人说句话）")
+            return []
+        if not router.group_allowed(state, group):
+            print(f"[M6] {_stamp()} 催办跳过：{group} 不是本场的群（§1.10）")
             return []
         _, tier1, tier2 = reminder.settings()
         due = reminder.scan(
