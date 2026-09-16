@@ -156,14 +156,23 @@ def route(
 
     # 1.5 【群里的文字消息必须 @机器人】（§8.1 备选 1 → D-69）
     #     动机：群里不 @ 就响应的话，组员讨论时打的指令词/数字会被误触发。
-    #     三类例外：① 登记表单（必须 @ 组员，形状见 register.looks_like_form）
+    #     三类例外：① **登记窗口内**的登记表单（必须 @ 组员，形状见 register.looks_like_form）
     #              ② 登记窗口的回话词「同意」/「取消」（机器人自己在等他回这句）
     #              ③ 私聊（下面这条 if 只拦 group）
     #     机器人的消息在第 0 步已经滤掉。
+    #
+    #     ⚠️ 表单豁免**必须同时满足"正处于登记窗口"**（F1，2026-09-16 加固）：光看形状不够。
+    #     ``looks_like_form`` 只要求"消息里有任意 @ **且** 任意一行以 `组长：`/`组员：` 开头"，
+    #     与 ``awaiting``、与"这条到底是不是那张表单"全都无关。只按形状豁免的话，
+    #     群里一句 `拆解\n组员：@甲 @乙 你们看看` 就能绕过 @ 门起 M3
+    #     （实测：起了 ``decompose`` 流水线 = 30 秒 LLM + 改状态），
+    #     D-69 想治的"讨论时误触发"原样回来了。
+    in_register_window = (state or {}).get("awaiting") == "register"
     if inbound.chat_type == "group" and not _mentioned_bot(
         inbound, bot_open_id, bot_name
     ):
-        if not register.looks_like_form(inbound) and not _is_register_reply(state, text):
+        form_exempt = in_register_window and register.looks_like_form(inbound)
+        if not form_exempt and not _is_register_reply(state, text):
             return Outcome()               # 没 @ 我 → 静默丢弃，一个字都不回
 
     if not text:
@@ -276,6 +285,35 @@ def route(
     )
 
 
+def _main_chain_guard(inbound: Inbound, roster) -> Outcome | None:
+    """M1（「作业书」）/ M3（「拆解」）的身份闸 —— **只有花名册成员能触发**。放行返回 ``None``。
+
+    为什么单独给这两条设闸（F1，2026-09-16 加固）：它们起的是**主链路**，跑完会
+    ``save_assignment`` / ``save_rubric`` / ``save_cards`` —— **整份覆盖**全组的评分点与任务卡。
+    而 M4–M7 的入口本来就有身份校验（非成员不给假确认、`报告` 只认组长、`封盘` 只认组长），
+    唯独最重的这两条以前一个校验都没有：任何能私聊到机器人的人，自己发一份 PDF 再说
+    「作业书」，就能把全组的产物换掉，而核对清单只回到他的私聊，群里完全不知道
+    （实测：陌生人私聊两步就起了 ``pipeline="assignment"``；群里 @ 我 发「拆解」也一样起 M3）。
+
+    **花名册为空（还没登记）时也拒**：这一条与 M5 的「``roster`` 为空 = 谁都算数」宽松口径
+    **有意不同** —— M5 最坏结果是群里多一条转达，而这里最坏结果是整份产物被换掉。
+    没认人之前，先让组长在群里发一次「登记」。
+
+    ``sender_open_id`` 为空（老事件 / 夹具）也拒：认不出来的人一律按非成员处理。
+    """
+    known = {member.open_id for member in (getattr(roster, "members", None) or ())}
+    if inbound.chat_type == "p2p":
+        # 私聊里没有"群"这层身份边界，所以**私聊必须认得出人**（没名册也拒）。
+        if not known:
+            return Outcome(replies=(reply(inbound, replies.MAIN_CHAIN_NEED_REGISTER),))
+    elif not known:
+        # 群里、且还没登记：群本身就是边界（「登记」也是在群里做的），先放行。
+        return None
+    if not inbound.sender_open_id or inbound.sender_open_id not in known:
+        return Outcome(replies=(reply(inbound, replies.MAIN_CHAIN_NOT_MEMBER),))
+    return None
+
+
 def _by_prefix(
     inbound: Inbound,
     state: dict,
@@ -290,6 +328,12 @@ def _by_prefix(
 ) -> Outcome:
     """D-33 的第 3、4 步：8 条前缀精确匹配 → 都不中就是指令列表（T01）。"""
     text = strip_mentions(inbound.text, inbound.mentions).strip()
+
+    # M1 / M3 会**整份覆盖**全组产物 ⇒ 先过身份闸，再谈前置条件（F1，2026-09-16 加固）。
+    if text.startswith("作业书") or text.startswith("拆解"):
+        guard = _main_chain_guard(inbound, roster)
+        if guard is not None:
+            return guard
 
     if text.startswith("作业书"):
         return _assignment(inbound, state, now)
