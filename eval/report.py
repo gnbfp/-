@@ -189,11 +189,20 @@ def compute(
     )
 
 
-def render(results: Sequence[DocResult], generated_at: str) -> str:
-    """渲染 ``eval/report.md``（门③ 的证据）。"""
+def render(results: Sequence[DocResult], generated_at: str, source: str = "") -> str:
+    """渲染 ``eval/report.md``（门③ 的证据）。
+
+    ``source``（可选）写进报告第二行：这份结论是**怎么来的**（全量重跑还是 ``--no-rerun``
+    快照复算）。以前报告里零来源信息 —— 一份 ``--no-rerun`` 产物与一份真跑出来的产物
+    长得一模一样，事后没人能分辨，也就没法核查。
+    """
     lines = [
         f"# M8 覆盖率复算报告（生成于 {generated_at}）",
         "",
+    ]
+    if source:
+        lines += [f"> 来源：{source}", ""]
+    lines += [
         "| 作业书 | 人工可拆 | agent 覆盖 | 覆盖率 | 均衡度 | 卡数 | 校验 | 状态 |",
         "|---|---|---|---|---|---|---|---|",
     ]
