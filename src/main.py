@@ -25,6 +25,7 @@ from src.intelligence.decompose import DecomposeResult, check, decompose
 from src.intelligence.extract import (
     ExtractError,
     check_deadline,
+    check_meta_fields,
     check_weight_sum,
     extract_text,
 )
@@ -135,7 +136,11 @@ def main(argv: list[str] | None = None) -> int:
         _progress("[落盘] 没找到评分标准 → 拒拆不写盘，保留上一份产物")
 
     print(render_checklist(parsed.meta, parsed.points, result.cards, result))
-    for warning in (check_weight_sum(parsed.points), check_deadline(parsed.meta)):
+    for warning in (
+        check_weight_sum(parsed.points),
+        check_deadline(parsed.meta),
+        check_meta_fields(parsed.meta),
+    ):
         if warning:
             print(f"\n[软警告] {warning}")
     return 0 if result.ok else 1

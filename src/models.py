@@ -88,10 +88,17 @@ class AssignmentMeta(_Base):
     source_file: str
 
     def validate(self) -> None:
-        # deadline 不在必填里：允许空（D-49），空值交给 check_deadline() 出软警告
-        for name in ("course", "title", "submission", "source_file"):
-            if not getattr(self, name):
-                raise SchemaError(f"AssignmentMeta.{name} 不能为空")
+        # ``course`` / ``title`` / ``submission`` 也允许空（F1，2026-09-16）：
+        # 提示词规则 6 说"找不到的字段填空字符串"，而这里以前判它们必填 —— 两条规则
+        # 互相打死时，模型为了跳出重试会**编造**内容。同一个坑 D-49 在 ``deadline``
+        # 上已经踩过（实测 3 份作业书被编出 ``1970-01-01T00:00`` 这类占位值）。
+        # 现在两边口径统一成"空是合法的"，空值交给 ``check_meta_fields()`` 出软警告，
+        # 由看到原文的组长决定要不要补 —— 与 B9「拍板永远在人」一致。
+        #
+        # ``source_file`` 仍必填：它由调用方（CLI / gateway）注入，描述的是"这份文件"
+        # 这个**程序已知的事实**，不依赖 LLM。空了说明调用方漏传，属于代码 bug，该当场炸。
+        if not self.source_file:
+            raise SchemaError("AssignmentMeta.source_file 不能为空（应由调用方注入文件名）")
 
 
 def parse_deadline(value) -> datetime | None:
@@ -100,6 +107,13 @@ def parse_deadline(value) -> datetime | None:
     ``value`` 可以是 ``AssignmentMeta``，也可以是原始字符串。截止时间的字符串格式
     文档没有定义（见上面 AssignmentMeta 的说明），所以这里**只认 ISO 风格**，
     认不出来就当没有 —— M6 宁可漏催、不可乱催，M7 甘特图则不画截止线。
+
+    **带时区的字符串统一换算成本地 naive**（F1，2026-09-16）：``fromisoformat`` 吃下
+    ``2026-09-19T23:59+08:00`` / 结尾 ``Z`` 之后返回的是 **aware** datetime，而项目里
+    到处用的是 ``datetime.now()``（naive 本地）—— 两者相减/比较会直接 ``TypeError``。
+    实测后果：M7「报告」+ 甘特图**整条崩**、M6 催办**每轮都崩、一条都催不出去**
+    （``reminder.scan()`` 的异常被 app 层吞成一行日志）。换算成本地 naive 语义不变
+    （同一时刻），类型与其它代码对齐。
     """
     if hasattr(value, "deadline"):
         value = getattr(value, "deadline", "")
@@ -107,9 +121,12 @@ def parse_deadline(value) -> datetime | None:
     if not text or text == "未标注":
         return None
     try:
-        return datetime.fromisoformat(text)
+        moment = datetime.fromisoformat(text)
     except ValueError:
         return None
+    if moment.tzinfo is not None:
+        moment = moment.astimezone().replace(tzinfo=None)
+    return moment
 
 
 @dataclass

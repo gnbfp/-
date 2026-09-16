@@ -31,6 +31,7 @@ __all__ = [
     "extract_text",
     "check_weight_sum",
     "check_deadline",
+    "check_meta_fields",
     "normalize_cjk",
     "check_radical_residue",
 ]
@@ -297,4 +298,38 @@ def check_deadline(meta: AssignmentMeta | None) -> str | None:
     match = re.match(r"^(\d{4})-", raw)
     if not match or int(match.group(1)) < DEADLINE_MIN_YEAR:
         return f"截止时间 {raw!r} 很可能是占位值（原文没有明确日期），请对照原文核对"
+    if _has_timezone(raw):
+        return (
+            f"截止时间 {raw!r} 带时区，已按本机时区换算成本地时间"
+            f"（催办与甘特图都按本地时间算）"
+        )
     return None
+
+
+def _has_timezone(text: str) -> bool:
+    """``2026-09-19T23:59+08:00`` / ``…Z`` —— 带时区偏移的写法。"""
+    return bool(re.search(r"(?:[+-]\d{2}:?\d{2}|[Zz])$", text))
+
+
+def check_meta_fields(meta: AssignmentMeta | None) -> str | None:
+    """作业元信息的**空字段**软校验。返回警告文案；``None`` = 都读到了（F1，2026-09-16）。
+
+    ``course`` / ``title`` / ``submission`` 以前判必填，而提示词规则 6 说"找不到就填空"——
+    两条规则互相打死，命中时 M1 会**连续 3 次重试全败、整条链路失败**，用户只看到一句
+    通用的「解析失败」（实测复现）。现在 schema 放开了，但"空"必须**看得见**：
+    否则核对清单上就是一段读起来很正常、其实缺了课程名/交付形式的文字。
+
+    与 ``check_deadline()`` / ``check_weight_sum()`` 同款：**软警告、不拒收**，
+    由看到原文的组长决定要不要补。
+    """
+    empty = [
+        name
+        for name in ("course", "title", "submission")
+        if not str(getattr(meta, name, "") or "").strip()
+    ]
+    if not empty:
+        return None
+    return (
+        f"作业书里没读到这些元信息：{'、'.join(empty)} —— "
+        f"报告与清单按「未标注」显示，请对照原文核对"
+    )

@@ -44,10 +44,15 @@ def render_checklist(
     by_task = {record.task_id: record for record in (assignments or ())}
 
     coverage = coverage_loop(cards, points)
-    # 空 deadline 不许显示成空字符串 —— 肉眼看不出来（D-49）
+    # 空值不许显示成空字符串 —— 肉眼看不出来（D-49 的 deadline；F1 的 course/title/submission）
     deadline = (meta.deadline or "").strip() or "未标注"
+    # title 空时退回文件名：文件名是**程序已知的事实**（与 source_file 同源，不是 LLM 猜的），
+    # 比在标题上留一对空书名号 《》 强。
+    title = (meta.title or "").strip() or (meta.source_file or "").strip() or "作业书"
+    course = (meta.course or "").strip() or "未标注"
+    submission = (meta.submission or "").strip() or "未标注"
     lines = [
-        f"《{meta.title}》 {meta.course}｜交付：{meta.submission}｜截止：{deadline}",
+        f"《{title}》 {course}｜交付：{submission}｜截止：{deadline}",
         "",
         "评分点核对清单",
     ]

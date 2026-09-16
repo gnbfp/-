@@ -33,6 +33,7 @@ from src.intelligence.direction import generate_directions
 from src.intelligence.extract import (
     ExtractError,
     check_deadline,
+    check_meta_fields,
     check_radical_residue,
     check_weight_sum,
     extract_text,
@@ -477,13 +478,15 @@ class Gateway:
         self.store.save_cards(list(result.cards))
 
         report = render_checklist(parsed.meta, parsed.points, result.cards, result)
-        # 三道软校验都只警告、不拒收（§7.5）：权重加总 + D-43 的部首残留 + D-49 的截止时间。
+        # 四道软校验都只警告、不拒收（§7.5）：权重加总 + D-43 的部首残留 +
+        # D-49 的截止时间 + F1 的元信息空字段（course / title / submission）。
         warnings = [
             w
             for w in (
                 check_weight_sum(parsed.points),
                 check_radical_residue(text),
                 check_deadline(parsed.meta),
+                check_meta_fields(parsed.meta),
             )
             if w
         ]

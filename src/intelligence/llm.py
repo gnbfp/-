@@ -131,6 +131,16 @@ class LLMClient:
         if response.status_code >= 400:
             raise LLMError(f"LLM HTTP {response.status_code}：{response.text[:200]}")
         try:
-            return response.json()["choices"][0]["message"]["content"]
+            content = response.json()["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise LLMError(f"LLM 返回结构异常：{response.text[:200]}") from exc
+        # ``content`` 可能是 ``null``（上游偶发）：以前会原样返回 None，然后 ``json.loads(None)``
+        # 抛 TypeError —— 而下面 ``chat_json`` 的四个 except 里**没有 TypeError**，
+        # 于是"契约内的自动重试"当场失效：实测只发 1 次请求就整条链路报错（F1，2026-09-16）。
+        # 归到 LLMError 才会走既有的重试路径（最多 3 次请求，仍失败才降级不猜）。
+        if not isinstance(content, str) or not content.strip():
+            raise LLMError(
+                f"LLM 返回的 content 不是非空字符串（得到 {type(content).__name__}）："
+                f"{response.text[:200]}"
+            )
+        return content
