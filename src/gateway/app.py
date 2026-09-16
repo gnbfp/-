@@ -242,7 +242,7 @@ class Gateway:
                 f"[M0] 处理事件出错（已忽略）：{type(exc).__name__}: {exc}", file=sys.stderr
             )
 
-    def handle(self, inbound: Inbound) -> Outcome:
+    def handle(self, inbound: Inbound, now: datetime | None = None) -> Outcome:
         """快路径：路由 → 回话 → 落盘 → 需要时起后台重活。
 
         第一件事是**按 message_id 去重**（P0-A）：飞书会重复投递 / 重连补投同一个
@@ -250,6 +250,13 @@ class Gateway:
         重复事件直接丢掉：不发消息、不写业务数据。
 
         每条消息先打一行日志（P1-G）：真机出问题时先看这一行，否则永远是黑盒。
+
+        ``now``（2026-09-16 补）：**可注入的时间**，一路传给 ``route()``；``None`` = 用墙上时间
+        （生产路径）。加它是因为仓库里出过两次**同一类"时间炸弹"**：测试把时间冻在某个绝对值，
+        而 TTL 判据（`PENDING_FILE_TTL` 30 分钟 / `RESET_TTL` 5 分钟）却读墙上时间 ——
+        于是测试在写下的那一刻是绿的，过一段时间就**永久变红**（实测：`test_reset.py` 三条
+        在 20:30 之后必挂、同一条 reset 分支上原样复现）。有它之后，测试可以传固定时间、
+        行为完全可复现。
         """
         print(
             f"[M0] {_stamp()} recv id={inbound.message_id} chat={inbound.chat_id} "
@@ -281,6 +288,7 @@ class Gateway:
             source_title=meta.title if meta else "",
             bot_open_id=bot_open_id,
             bot_name=bot_name,
+            now=now,
         )
         failures = self._deliver(outcome)
         # 主动私聊发不出去要说出来（P0-C）：否则"群里说清单已发、实际没人收到"。
