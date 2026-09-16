@@ -268,6 +268,107 @@ def test_register_form_without_bot_mention_passes_the_gate():
     assert outcome.replies or outcome.state
 
 
+# ---------- 登记「确认」阶段（真机回归：@ 门曾把每次确认都作废）----------
+
+
+def _confirm_state(initiator="ou_zhang"):
+    return {
+        "awaiting": "register",
+        "group_chat_id": GROUP,
+        "register": {
+            "stage": "confirm",
+            "initiator_open_id": initiator,
+            "leader": {"open_id": "ou_zhang", "name": "张三"},
+            "members": [
+                {"open_id": "ou_li", "name": "李四"},
+                {"open_id": "ou_wang", "name": "王五"},
+            ],
+            "expires_at": "2026-09-15T20:05:00",
+        },
+    }
+
+
+def test_confirm_with_mention_saves_the_roster():
+    """🔴 真机回归：群里带 @ 发「同意」曾经**一律被作废**（原文 "@_user_1 同意" != "同意"）。"""
+    outcome = route(
+        _inbound("@_user_1 同意", mentions=[_mention()]),
+        _confirm_state(),
+        _roster(),
+        bot_open_id=BOT,
+        bot_name="喵喵喵",
+        now=NOW,
+    )
+    assert outcome.save_roster is not None, outcome.replies
+    assert "花名册已保存" in outcome.replies[0].text
+    assert outcome.state["awaiting"] is None
+
+
+def test_confirm_without_mention_is_exempted_and_saves():
+    """不带 @ 的「同意」也认：机器人自己说的就是"回复「同意」保存"（D-69 ②）。"""
+    outcome = route(
+        _inbound("同意"),
+        _confirm_state(),
+        _roster(),
+        bot_open_id=BOT,
+        bot_name="喵喵喵",
+        now=NOW,
+    )
+    assert outcome.save_roster is not None, outcome.replies
+
+
+def test_cancel_word_without_mention_is_exempted():
+    outcome = route(
+        _inbound("取消"),
+        _confirm_state(),
+        _roster(),
+        bot_open_id=BOT,
+        bot_name="喵喵喵",
+        now=NOW,
+    )
+    assert outcome.replies[0].text == replies.REGISTER_CANCELLED
+
+
+def test_other_reply_with_mention_still_cancels():
+    """既有设计不变：确认阶段回别的 → 作废（机器人明说过）。"""
+    outcome = route(
+        _inbound("@_user_1 等一下", mentions=[_mention()]),
+        _confirm_state(),
+        _roster(),
+        bot_open_id=BOT,
+        bot_name="喵喵喵",
+        now=NOW,
+    )
+    assert outcome.replies[0].text == replies.REGISTER_CANCELLED
+
+
+def test_non_initiator_agree_is_silent():
+    """旁人（哪怕 @ 了）说「同意」也静默 —— 只有发起人能推进（§7.7）。"""
+    outcome = route(
+        _inbound("@_user_1 同意", mentions=[_mention()], sender_open_id="ou_li"),
+        _confirm_state(),
+        _roster(),
+        bot_open_id=BOT,
+        bot_name="喵喵喵",
+        now=NOW,
+    )
+    assert outcome.replies == ()
+    assert outcome.save_roster is None
+
+
+def test_vote_digit_is_still_not_exempted():
+    """豁免只给登记回话词：投票窗口的裸数字不带 @ 依旧丢弃（那正是要治的误触发）。"""
+    outcome = route(
+        _inbound("1"),
+        _vote_state(),
+        _roster(),
+        bot_open_id=BOT,
+        bot_name="喵喵喵",
+        now=NOW,
+    )
+    assert outcome.replies == ()
+    assert outcome.save_direction is None
+
+
 # ---------- 无参「完成」（D-70）----------
 
 

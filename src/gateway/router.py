@@ -63,6 +63,17 @@ def strip_mentions(text: str, mentions: Sequence[Mention] = ()) -> str:
     return _MENTION_PLACEHOLDER.sub("", text or "")
 
 
+def _is_register_reply(state: dict, text: str) -> bool:
+    """登记窗口内，「同意」/「取消」这类**回话词**豁免 @ 门（D-69 ②）。
+
+    机器人自己在提示里说「回复「同意」保存」 —— 用户照做却被静默丢弃不合理，
+    而这两个词动作明确、闲聊里打出来也不至于误伤（登记窗口本来就有"回复别的就作废"）。
+    只在 ``awaiting == "register"`` 时生效，不影响其它窗口（投票裸数字**不豁免**，
+    那正是要治的误触发场景）。
+    """
+    return (state or {}).get("awaiting") == "register" and register.is_reply_word(text)
+
+
 def _mentioned_bot(inbound: Inbound, bot_open_id: str = "", bot_name: str = "") -> bool:
     """这条消息 @ 的是不是**机器人自己**（D-69）。
 
@@ -128,17 +139,20 @@ def route(
     if inbound.message_type != "text":
         return Outcome()
 
+    text = strip_mentions(inbound.text, inbound.mentions).strip()
+
     # 1.5 【群里的文字消息必须 @机器人】（§8.1 备选 1 → D-69）
     #     动机：群里不 @ 就响应的话，组员讨论时打的指令词/数字会被误触发。
-    #     例外：登记表单（要 @ 组员，形状见 register.looks_like_form）。
-    #     私聊不受影响；机器人的消息在第 0 步已经滤掉。
+    #     三类例外：① 登记表单（必须 @ 组员，形状见 register.looks_like_form）
+    #              ② 登记窗口的回话词「同意」/「取消」（机器人自己在等他回这句）
+    #              ③ 私聊（下面这条 if 只拦 group）
+    #     机器人的消息在第 0 步已经滤掉。
     if inbound.chat_type == "group" and not _mentioned_bot(
         inbound, bot_open_id, bot_name
     ):
-        if not register.looks_like_form(inbound):
+        if not register.looks_like_form(inbound) and not _is_register_reply(state, text):
             return Outcome()               # 没 @ 我 → 静默丢弃，一个字都不回
 
-    text = strip_mentions(inbound.text, inbound.mentions).strip()
     if not text:
         return Outcome()                       # 纯 @ 段 / 空文本：静默，不刷屏
 
@@ -154,8 +168,10 @@ def route(
         mode = register.classify((state or {}).get("register") or {}, inbound, inbound.text, now)
         if mode == "step":
             # 表单要吃**原文**：@ 占位符（@_user_1）是"这行 @ 了谁"的唯一线索，
-            # 剥掉就再也对不上 open_id 了（D-34：id 只从 @ 结构里取）
-            return register.register_step(inbound.text, inbound, state, now)
+            # 剥掉就再也对不上 open_id 了（D-34：id 只从 @ 结构里取）。
+            # 确认阶段则相反：要比字面量「同意」，必须用**剥 @ 后的正文**（D-69 修复）——
+            # 群里带 @ 时原文是 "@_user_1 同意"，拿原文比会把每次确认都当"回复别的"作废。
+            return register.register_step(inbound.text, inbound, state, now, plain=text)
         if mode == "silent":
             return Outcome()
     if awaiting == "vote":

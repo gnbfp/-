@@ -209,7 +209,7 @@ REGISTER_NEED_LEADER = "表单里「组长」要正好 1 个人，请改完重�
 REGISTER_NEED_MEMBERS = "表单里「组员」至少 2 个人，请改完重发一次。"
 REGISTER_CONFIRM = (
     "我读到的是：\n组长：{leader}\n组员：{members}（含组长共 {total} 人）\n\n"
-    "回复「同意」保存，回复别的就作废。"
+    "回复「同意」保存，回复别的就作废。（群里 @我 发「同意」也行，@ 不 @ 都收得到）"
 )
 REGISTER_SAVED = "花名册已保存：组长 {leader}，含组长共 {total} 人。"
 REGISTER_CANCELLED = "已作废，原有名单没动。"
