@@ -34,7 +34,7 @@ from src.intelligence.decompose import (
     decompose,
     decompose_from_body,
 )
-from src.intelligence.direction import generate_directions
+from src.intelligence.direction import generate_directions, generate_directions_from_body
 from src.intelligence.extract import (
     ExtractError,
     check_deadline,
@@ -239,13 +239,18 @@ class Gateway:
         state = self.store.load_state()
         has_rubric = bool(self.store.load_rubric())
         meta = self.store.load_assignment()
+        cards = self.store.load_cards()
+        # 无评分点模式（口径 A，2026-09-16）：没有评分点**但有卡** ⇒ 上一轮走的是
+        # 「按正文拆」。此时「方向」「报告」要按正文那条路走，不能当"还没作业书"。
+        body_mode = (not has_rubric) and bool(cards)
         bot_open_id, bot_name = self._bot_identity()
         outcome = route(
             inbound,
             state,
             self.store.load_members(),
             has_rubric=has_rubric,
-            cards=self.store.load_cards(),
+            body_mode=body_mode,
+            cards=cards,
             preferences=self.store.load_preferences(),
             assignments=self.store.load_assignments(),
             source_title=meta.title if meta else "",
@@ -577,17 +582,38 @@ class Gateway:
         )
 
     def _run_direction(self, inbound: Inbound) -> None:
-        """「方向」：评分点 → 2–3 个候选（M2 唯一的 LLM 点）→ 开投票窗口发群（§2.2）。
+        """「方向」：评分点（或**正文**）→ 2–3 个候选（M2 唯一的 LLM 点）→ 开投票窗口发群（§2.2）。
 
         前置缺哪个就回哪句、不发候选：与 router 的判定口径一致（必修 4）。
         开窗时**重新读一次 state**（生成要花十几秒），别拿十几秒前的快照覆盖回盘 ——
         不然这期间别人刚建的花名册 / 窗口会被一起写没。
+
+        **无评分点模式**（口径 A，2026-09-16）：`rubric.json` 是空数组时，候选从**正文**生成 ——
+        正文按 `assignment.source_file` 从 `data/uploads/` 取回（`extract_text` 是纯函数、不花 token）。
         """
         points = self.store.load_rubric()
+        meta = self.store.load_assignment()
         if not points:
-            # D-48 口径：没有评分点就不生成，不烧 token
-            self._send(reply(inbound, replies.NEEDS_RUBRIC))
+            # 没有评分点：只有"按正文拆过"才继续（body_mode），否则仍然是 D-48 的拒做
+            text = self._load_uploaded_body(meta)
+            if text is None:
+                self._send(reply(inbound, replies.NEEDS_RUBRIC))
+                return
+            roster = self.store.load_members()
+            if roster is None or not roster.members:
+                self._send(reply(inbound, replies.VOTE_NEED_ROSTER))
+                return
+            try:
+                result = generate_directions_from_body(text, meta, self._llm())
+            except LLMError:
+                self._send(reply(inbound, replies.VOTE_GENERATE_FAILED))
+                return
+            if not result.ok:
+                self._send(reply(inbound, replies.VOTE_GENERATE_FAILED))
+                return
+            self._open_vote_window(inbound, result)
             return
+
         roster = self.store.load_members()
         if roster is None or not roster.members:
             self._send(reply(inbound, replies.VOTE_NEED_ROSTER))
@@ -601,6 +627,30 @@ class Gateway:
         if not result.ok:
             self._send(reply(inbound, replies.VOTE_GENERATE_FAILED))
             return
+        self._open_vote_window(inbound, result)
+
+    def _load_uploaded_body(self, meta) -> str | None:
+        """把 `data/uploads/` 里那份作业书正文取回来；取不到返回 ``None``。
+
+        无评分点模式要用：候选方向（M2）与核对清单都得从**正文**长出来。
+        文件名来自 ``assignment.source_file``（M1 落盘时由代码注入的真实文件名）。
+        """
+        if meta is None or not getattr(meta, "source_file", ""):
+            return None
+        path = Path(self.store.uploads) / meta.source_file
+        if not path.is_file():
+            return None
+        try:
+            return extract_text(path)
+        except ExtractError:
+            return None
+
+    def _open_vote_window(self, inbound: Inbound, result) -> None:
+        """把候选发群 + 开投票窗口（两条入口共用：评分点模式 / 无评分点模式）。
+
+        重新读一次 state（生成花了十几秒），别拿旧快照覆盖回盘 —— 这期间的
+        花名册 / 别的窗口会被一起写没（``vote.open_window`` 只改 ``state.vote``）。
+        """
         outcome = vote.open_window(
             inbound,
             self.store.load_state(),

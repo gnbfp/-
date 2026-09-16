@@ -120,6 +120,7 @@ def route(
     roster=None,
     *,
     has_rubric: bool = False,
+    body_mode: bool = False,
     cards: Sequence = (),
     preferences: Sequence = (),
     assignments: Sequence = (),
@@ -129,7 +130,6 @@ def route(
     bot_name: str = "",
 ) -> Outcome:
     """一条消息 → 一个 Outcome。顺序严格按 D-33：剥 @段 → 状态 → 前缀 → 兜底。
-
     ``roster`` / ``cards`` / ``preferences`` 由 app 层从 ``data/`` 读出来传进来 ——
     router 自己不读文件，但仍然能对 M4 给出正确回复：开窗口、收志愿、结算、发总表。
     传进的是**数据**不是**路径**，所以这一整套规则照样能离线全量单测。
@@ -231,6 +231,7 @@ def route(
                     state,
                     roster,
                     has_rubric=has_rubric,
+                    body_mode=body_mode,
                     cards=cards,
                     preferences=preferences,
                     assignments=assignments,
@@ -267,6 +268,7 @@ def route(
                     state,
                     roster,
                     has_rubric=has_rubric,
+                    body_mode=body_mode,
                     cards=cards,
                     preferences=preferences,
                     assignments=assignments,
@@ -284,6 +286,7 @@ def route(
         state,
         roster,
         has_rubric=has_rubric,
+        body_mode=body_mode,
         cards=cards,
         preferences=preferences,
         assignments=assignments,
@@ -327,6 +330,7 @@ def _by_prefix(
     roster=None,
     *,
     has_rubric: bool = False,
+    body_mode: bool = False,
     cards: Sequence = (),
     preferences: Sequence = (),
     assignments: Sequence = (),
@@ -356,7 +360,9 @@ def _by_prefix(
     if text.startswith("方向"):
         # M2：群里 = 起后台生成候选 + 开投票窗口；私聊 = 指出"去群里发"（§2.2）。
         # 前置缺失（没评分点 / 没花名册）都在 vote.command() 里判，**都不起 pipeline**。
-        return vote.command(inbound, state, roster, has_rubric=has_rubric, now=now)
+        return vote.command(
+            inbound, state, roster, has_rubric=has_rubric, body_mode=body_mode, now=now
+        )
     if text.startswith("你想做哪一块"):
         return preference.command(
             inbound, state, cards, roster, preferences, now, source_title=source_title

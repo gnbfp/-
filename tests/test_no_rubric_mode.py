@@ -12,6 +12,7 @@
 """
 
 import json
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -66,6 +67,12 @@ def _inbound(text="", *, chat_type="group", chat_id=GROUP, sender="ou_leader", m
         sender_open_id=sender,
         message_id="m1",
     )
+
+
+def _bot_mention():
+    from src.gateway.events import Mention
+
+    return Mention(key="@_user_1", open_id=BOT, name="喵喵喵")
 
 
 class _Resp:
@@ -342,3 +349,141 @@ def test_runners_of_m4_to_m7_still_have_no_llm():
     for name in ("report/checklist.py", "report/gantt.py"):
         text = (SRC / name).read_text(encoding="utf-8")
         assert "LLMClient" not in text and "_llm(" not in text, name
+
+
+# ---------- 7. M2「方向」在无评分点模式下也能用（口径 A 续，2026-09-16）----------
+
+
+def _directions_payload(*refs):
+    """``refs`` 逐条候选给 rubric_refs（默认每条都空）。"""
+    if not refs:
+        refs = ([],)
+    return json.dumps(
+        {
+            "directions": [
+                {
+                    "id": i,
+                    "title": f"方向 {i}",
+                    "note": f"呼应正文第 {i} 条交付要求",
+                    "rubric_refs": list(ref),
+                }
+                for i, ref in enumerate(refs, 1)
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+
+def test_direction_body_generates_candidates_with_empty_refs():
+    from src.intelligence.direction import generate_directions_from_body
+
+    client, http = _client([_directions_payload([], [])])
+
+    result = generate_directions_from_body("正文：要交一份报告和一份 PPT。", _meta(), client)
+
+    assert result.ok
+    assert len(result.directions) == 2
+    assert all(direction.rubric_refs == () for direction in result.directions)
+    assert http.calls == 1
+
+
+def test_direction_body_rejects_fabricated_refs():
+    """模型编 R1 → 当作校验失败喂回重试（与 M3 的无评分点模式同款口径）。"""
+    from src.intelligence.direction import generate_directions_from_body
+    from src.intelligence.llm import LLMError
+
+    # 两条都编造引用：条数（2–3）先过关，这样撞上的才是"refs 必须为空"那条校验
+    client, http = _client([_directions_payload(["R1"], ["R1"])])
+
+    try:
+        generate_directions_from_body("正文…", _meta(), client)
+    except LLMError as exc:
+        assert "rubric_refs" in str(exc)
+    else:                                                   # pragma: no cover
+        raise AssertionError("编造引用时应当抛 LLMError")
+
+    assert http.calls == 3
+
+
+def test_vote_command_allows_body_mode_in_the_group():
+    from src.gateway import vote
+
+    outcome = vote.command(
+        _inbound("@_user_1 方向"), {}, _leader_roster(),
+        has_rubric=False, body_mode=True, now=NOW,
+    )
+    assert outcome.pipeline == "direction"
+
+
+def test_vote_command_still_refuses_without_rubric_and_without_body_mode():
+    from src.gateway import vote
+
+    outcome = vote.command(
+        _inbound("@_user_1 方向"), {}, _leader_roster(),
+        has_rubric=False, body_mode=False, now=NOW,
+    )
+    assert [r.text for r in outcome.replies] == [replies.NEEDS_RUBRIC]
+    assert outcome.pipeline == ""
+
+
+def test_route_threads_body_mode_into_direction():
+    from src.gateway.events import Mention
+
+    outcome = route(
+        _inbound("@_user_1 方向",
+                 mentions=(Mention(key="@_user_1", open_id=BOT, name="喵喵喵"),)),
+        {}, _leader_roster(),
+        has_rubric=False, body_mode=True, bot_open_id=BOT, bot_name="喵喵喵", now=NOW,
+    )
+    assert outcome.pipeline == "direction"
+
+
+def test_direction_end_to_end_in_body_mode(tmp_path):
+    """整条走一遍：`rubric.json` 为空 + 正文在 uploads 里 → 「方向」照样出候选、开窗。"""
+    from src.gateway.app import Gateway
+    from src.storage import UPLOADS, JsonStore
+
+    store = JsonStore(tmp_path)
+    store.ensure_dirs()
+    store.save_members(_leader_roster())
+    meta = _meta()
+    meta.source_file = "河流.txt"
+    store.save_assignment(meta)
+    store.save_rubric([])                                   # 无评分点模式的落盘标记
+    store.save_cards([
+        TaskCard(task_id="T1", module_name="写报告", rubric_refs=[], effort_hours=4.0,
+                 deliverable="报告", acceptance="该卡来自正文要求，不是评分点，需组长确认"),
+    ])
+    (tmp_path / UPLOADS).mkdir(exist_ok=True)
+    (tmp_path / UPLOADS / "河流.txt").write_text("正文：要交一份调查报告和 PPT。", encoding="utf-8")
+
+    sent: list[str] = []
+
+    class _Sender:
+        def send(self, message):
+            sent.append(message.text)
+            return True
+
+        def bot_info(self):
+            return {"open_id": BOT, "app_name": "喵喵喵"}
+
+        def download(self, pending, target_dir):            # pragma: no cover - 本用例不下载
+            raise AssertionError("本用例不该下载文件")
+
+    sender = _Sender()
+    gateway = Gateway(config=None, store=store, sender=sender, downloader=sender)
+    gateway._llm = lambda: _client([_directions_payload([], [])])[0]  # type: ignore[method-assign]
+
+    gateway.handle(_inbound("@_user_1 方向",
+                            mentions=(_bot_mention(),)))
+
+    # 「方向」在后台线程里跑（生成要十几秒）—— 等它把窗口开完再断言
+    deadline = datetime.now() + timedelta(seconds=5)
+    state = store.load_state()
+    while not state.get("vote") and datetime.now() < deadline:
+        time.sleep(0.05)
+        state = store.load_state()
+
+    assert any("候选方向" in text for text in sent)          # 候选发到群里
+    assert state.get("vote") and state["awaiting"] == "vote"  # 投票窗口开了
+

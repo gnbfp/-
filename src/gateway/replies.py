@@ -25,6 +25,7 @@ __all__ = [
     "MAIN_CHAIN_NOT_MEMBER",
     "MAIN_CHAIN_NEED_REGISTER",
     "VOTE_GENERATING",
+    "VOTE_GENERATING_BODY",
     "VOTE_NEED_GROUP",
     "VOTE_NEED_ROSTER",
     "VOTE_IN_PROGRESS",
@@ -164,6 +165,8 @@ MAIN_CHAIN_NEED_REGISTER = (
 
 # ---- M2 方向候选 + 群内投票（§7.1 / §7.6 / D-35 / D-36）----
 VOTE_GENERATING = "收到，正在按评分点生成候选方向，大概需要半分钟…"
+# 无评分点模式（口径 A）：没有评分点，候选从正文的交付要求长出来 —— 话术跟着换
+VOTE_GENERATING_BODY = "收到，正在按正文里的交付要求生成候选方向，大概需要半分钟…"
 VOTE_NEED_GROUP = "投票是群里的动作：请到群里发「方向」。"
 VOTE_NEED_ROSTER = "还没有花名册：先在群里发「登记」建一份，再发「方向」。"
 VOTE_IN_PROGRESS = "方向投票正在进行：还剩 {minutes} 分钟，回复数字投票就行。"
