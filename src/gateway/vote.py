@@ -79,13 +79,18 @@ def command(
     roster,
     *,
     has_rubric: bool = False,
+    body_mode: bool = False,
     now: datetime | None = None,
 ) -> Outcome:
     """「方向」：群里 = 起后台生成 + 开窗；私聊 = 指出"去群里发"（§2.2）。
 
     前置缺哪句就回哪句，且**都不起 pipeline**（同必修 4 的口径：回话与起不起重活同源）。
+
+    ``body_mode``（口径 A，2026-09-16）：作业书没有评分标准、但已经按「按正文拆」拆出了卡
+    ⇒ 候选从**正文的交付要求**生成（``direction.generate_directions_from_body``）。
+    没有评分点**且**不在无评分点模式时才回 ``NEEDS_RUBRIC``（不烧 token）。
     """
-    if not has_rubric:
+    if not has_rubric and not body_mode:
         # D-48 口径：没有评分点就不生成，不烧 token
         return Outcome(replies=(reply(inbound, replies.NEEDS_RUBRIC),))
     members = list(getattr(roster, "members", None) or ())
@@ -104,7 +109,9 @@ def command(
             )
         )
     # 没窗口 / 已过期 / 已冻住 → 重新生成候选、开新窗口（§2.2）
-    return Outcome(replies=(reply(inbound, replies.VOTE_GENERATING),), pipeline="direction")
+    # 无评分点模式下话术跟着换：这次候选是从**正文的交付要求**长出来的，不是评分点。
+    ack = replies.VOTE_GENERATING_BODY if body_mode else replies.VOTE_GENERATING
+    return Outcome(replies=(reply(inbound, ack),), pipeline="direction")
 
 
 def open_window(

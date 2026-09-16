@@ -32,6 +32,8 @@ __all__ = [
     "DirectionResult",
     "DIRECTION_SYSTEM",
     "generate_directions",
+    "M2_BODY_SYSTEM",
+    "generate_directions_from_body",
 ]
 
 MIN_DIRECTIONS = 2
@@ -52,6 +54,28 @@ DIRECTION_SYSTEM = """你是小组作业机器人里的「M2 方向候选」模�
 硬约束：
 1. 只出 2-3 条：不许只出 1 条，也不许多于 3 条。
 2. 每条方向都要从评分点长出来（至少对上"方案设计 / 系统实现 / 报告文档"里的一类要求）。
+3. 方向之间要题目本身不同，不是同一个题目的三种叫法。
+4. 你不替人做选题：只提供候选，由全组投票拍板。
+5. 不写实现细节、不写技术选型、不写任务分解（那是别的模块的事）。
+6. 方向要贴合作业本身的性质：作业要交报告就别硬套"做一个系统"，作业要交系统就别写纯论文选题。"""
+
+# 无评分点模式（口径 A，2026-09-16）：作业书里没有评分标准时，「方向」只能从**正文的
+# 交付要求 / 任务描述**长出来 —— 与 M3 的 ``M3_BODY_SYSTEM`` 同一条口径。
+M2_BODY_SYSTEM = """你是小组作业机器人里的「M2 方向候选」模块。这份作业书里**没有评分标准**，
+所以候选方向只能根据**正文里的交付要求和任务描述**给出 2-3 个选题大方向。
+只输出 JSON 对象，不要解释、不要 markdown 代码块：
+{"directions": [{"id": 1, "title": "（一句话说清这份作业打算做的题目）", "note": "（一句话说明它呼应了正文里的哪条交付要求）", "rubric_refs": []}]}
+
+字段要求：
+- id：从 1 连续编号。
+- title：一句话方向，说清"这份作业打算做什么题目"，不超过 24 个汉字。
+- note：一句话说明它呼应了正文里的哪条交付要求，不超过 40 字，给全组看。
+- rubric_refs：**必须是空数组 []**。这份作业书没有评分点，**不许编造 R1/R2 之类的编号**。
+
+硬约束：
+1. 只出 2-3 条：不许只出 1 条，也不许多于 3 条。
+2. 每条方向都要落在**正文明确要求的交付物**上（要交的报告 / PPT / 数据集 / 调查…），
+   不要凭空发明作业书里没提的产出。
 3. 方向之间要题目本身不同，不是同一个题目的三种叫法。
 4. 你不替人做选题：只提供候选，由全组投票拍板。
 5. 不写实现细节、不写技术选型、不写任务分解（那是别的模块的事）。
@@ -124,6 +148,43 @@ def generate_directions(
     return DirectionResult(directions=client.chat_json(DIRECTION_SYSTEM, user, parse))
 
 
+def generate_directions_from_body(
+    text: str,
+    meta: AssignmentMeta | None,
+    client: LLMClient,
+) -> DirectionResult:
+    """**无评分点模式**（口径 A，2026-09-16）：正文 → 2–3 个候选方向。
+
+    只在 ``rubric.json`` 为空数组（即上一轮走的是「按正文拆」）时被调用。
+    与 ``generate_directions()`` 的区别：提示词换 ``M2_BODY_SYSTEM``、
+    候选的 ``rubric_refs`` **必须是空数组**（没有评分点可引用，不许编造编号）。
+
+    仍是 **B2 的第二处 LLM 点（M2）**，没有新增调用点。
+    """
+    user = _render_body_user(text, meta)
+
+    def parse(response) -> tuple[Direction, ...]:
+        return _validate_directions(response, (), require_empty_refs=True)
+
+    return DirectionResult(directions=client.chat_json(M2_BODY_SYSTEM, user, parse))
+
+
+def _render_body_user(text: str, meta: AssignmentMeta | None) -> str:
+    """user 消息 = 作业元信息 + **正文**（无评分标准时，候选只能从正文长出来）。"""
+    parts: list[str] = []
+    if meta is not None:
+        parts.append(
+            "作业元信息（JSON）：\n"
+            + json.dumps(
+                {"course": meta.course, "title": meta.title, "submission": meta.submission},
+                ensure_ascii=False,
+            )
+        )
+    parts.append("作业书正文如下（这份文件里没有评分标准）：\n\n" + text)
+    parts.append('请输出 JSON：{"directions": [...]}')
+    return "\n\n".join(parts)
+
+
 def _render_user(points: Sequence[RubricPoint], meta: AssignmentMeta | None) -> str:
     """user 消息 = 作业元信息 + 评分点清单（id / weight / 原文）。"""
     parts: list[str] = []
@@ -147,10 +208,16 @@ def _render_user(points: Sequence[RubricPoint], meta: AssignmentMeta | None) -> 
     return "\n\n".join(parts)
 
 
-def _validate_directions(payload, points: Sequence[RubricPoint]) -> tuple[Direction, ...]:
+def _validate_directions(
+    payload, points: Sequence[RubricPoint], *, require_empty_refs: bool = False
+) -> tuple[Direction, ...]:
     """schema 校验（不是"方向好不好"的判定）：条数 2–3、id 从 1 连续、引用真实存在。
 
     不合法一律抛 ``LLMOutputError`` —— 它就是"触发重试"的信号（``chat_json`` 的契约）。
+
+    ``require_empty_refs=True``（无评分点模式）：``rubric_refs`` 必须是空数组 ——
+    这份作业书没有评分点，任何 ``R1``/``R2`` 都是模型编的。校验出来就喂回重拆，
+    而不是"悄悄把编的引用清掉"。
     """
     if not isinstance(payload, dict) or not isinstance(payload.get("directions"), list):
         raise LLMOutputError('顶层必须是 {"directions": [...]}')
@@ -188,7 +255,13 @@ def _validate_directions(payload, points: Sequence[RubricPoint]) -> tuple[Direct
                 f"directions[{index}] 的 note 超过 {NOTE_MAX} 字（{len(direction.note)} 字）"
             )
         unknown = sorted(set(direction.rubric_refs) - known)
-        if unknown:
+        if require_empty_refs:
+            if direction.rubric_refs:
+                problems.append(
+                    f"directions[{index}] 的 rubric_refs 必须是空数组"
+                    f"（这份作业书没有评分点，得到 {list(direction.rubric_refs)}）"
+                )
+        elif unknown:
             problems.append(f"directions[{index}] 引用了不存在的评分点：{unknown}")
         directions.append(direction)
 

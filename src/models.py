@@ -165,6 +165,9 @@ class TaskCard(_Base):
       *  requirements §6.2 / D-03 写的是"落盘只存 id 数组，展示时才 join 出原文"
     这里按 D-03 enforce：因为 §7.3 的 check() 是 id 集合运算（eligible <= covered），
     数组里塞不得原文。validate() 会把"塞了原文"的写法直接拒掉。
+    **空数组合法**（无评分点模式，2026-09-16）：作业书里没有评分标准、组长确认
+    「按正文拆」之后，卡片来自正文的交付要求，没有评分点可溯源 —— 见
+    ``decompose.M3_BODY_SYSTEM``。空数组同时就是落盘侧的"无评分点模式"标记。
     """
 
     task_id: str
@@ -178,10 +181,10 @@ class TaskCard(_Base):
     def validate(self) -> None:
         if not self.task_id:
             raise SchemaError("TaskCard.task_id 不能为空")
-        if not self.rubric_refs:
-            raise SchemaError(
-                f"TaskCard({self.task_id}): rubric_refs 是必填溯源字段，不能为空"
-            )
+        # rubric_refs 允许**空数组**（无评分点模式，口径 A / 2026-09-16）：作业书里没有评分标准、
+        # 组长确认「按正文拆」之后，卡片是从正文的交付要求建的，**没有评分点可溯源**。
+        # D-03 真正要守的那条不变、且在这里继续 enforce：数组里**只能放 id 字符串**，
+        # 不许把原文塞进来（§7.3 的 check() 是 id 集合运算）。
         for ref in self.rubric_refs:
             if not isinstance(ref, str):
                 raise SchemaError(

@@ -48,15 +48,20 @@ def _report(config) -> int:
     cards = store.load_cards()
     assignments = store.load_assignments()
     roster = store.load_members()
-    if meta is None or not points or not cards or not assignments:
+    if meta is None or not cards or not assignments:
         print(
-            "[报告] data/ 里还缺产物（作业书 / 评分点 / 任务卡 / 分配）—— 先跑主链路与 M4。",
+            "[报告] data/ 里还缺产物（作业书 / 任务卡 / 分配）—— 先跑主链路与 M4。",
             file=sys.stderr,
         )
         return 2
-    # 自检项按现状重算：报告是快照，不是拆解（generations=0）
+    # 无评分点模式（口径 A，2026-09-16）下 rubric.json 本来就是空数组 ⇒
+    # "没有 points" 不算缺产物。自检项按现状重算（报告是快照、不是拆解，generations=0）。
+    body_mode = not points
     result = DecomposeResult(
-        cards=tuple(cards), failures=tuple(check(cards, points)), generations=0
+        cards=tuple(cards),
+        failures=tuple(check(cards, points, allow_empty_rubric=body_mode)),
+        generations=0,
+        mode="body" if body_mode else "rubric",
     )
     print(
         "\n".join(
