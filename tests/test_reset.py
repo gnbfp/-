@@ -257,7 +257,7 @@ def test_reset_request_lists_what_will_be_cleared_without_deleting(env):
     gateway, store, sender = env
     _seed_old_session(store)
 
-    gateway.handle(_inbound(RESET_WORD))
+    gateway.handle(_inbound(RESET_WORD), now=NOW)
     _wait_for(lambda: any("清之前先给你看清楚" in t for t in sender.texts))
 
     assert replies.RESET_REQUEST_HEADER in sender.texts[-1]
@@ -271,9 +271,9 @@ def test_reset_confirm_wipes_this_session_but_keeps_roster_and_seen(env):
     gateway, store, sender = env
     _seed_old_session(store)
 
-    gateway.handle(_inbound(RESET_WORD))
+    gateway.handle(_inbound(RESET_WORD), now=NOW)
     _wait_for(lambda: any("清之前先给你看清楚" in t for t in sender.texts))
-    gateway.handle(_inbound(RESET_CONFIRM_WORD))
+    gateway.handle(_inbound(RESET_CONFIRM_WORD), now=NOW)
     _wait_for(lambda: any("已重置" in t for t in sender.texts))
 
     assert "已重置" in sender.texts[-1]
@@ -293,7 +293,7 @@ def test_reset_confirm_wipes_this_session_but_keeps_roster_and_seen(env):
 def test_reset_on_an_already_clean_board_says_so_and_clears_the_window(env):
     gateway, store, sender = env
 
-    gateway.handle(_inbound(RESET_WORD))
+    gateway.handle(_inbound(RESET_WORD), now=NOW)
     _wait_for(lambda: sender.texts != [])
 
     assert sender.texts[-1] == replies.RESET_NOTHING
@@ -318,7 +318,7 @@ def test_replacing_the_pdf_asks_before_overwriting(env):
     _seed_old_session(store)
     _pending(store)
 
-    gateway.handle(_inbound("作业书"))
+    gateway.handle(_inbound("作业书"), now=NOW)
     _wait_for(lambda: any("换一份作业书会把它们整个换掉" in t for t in sender.texts))
 
     assert replies.RESET_REPLACE_HEADER in sender.texts[-1]
@@ -331,9 +331,9 @@ def test_confirm_then_replace_runs_m1_and_clears_the_previous_downstream(env):
     _seed_old_session(store)
     _pending(store)
 
-    gateway.handle(_inbound("作业书"))
+    gateway.handle(_inbound("作业书"), now=NOW)
     _wait_for(lambda: any("换一份作业书会把它们整个换掉" in t for t in sender.texts))
-    gateway.handle(_inbound(RESET_CONFIRM_WORD))
+    gateway.handle(_inbound(RESET_CONFIRM_WORD), now=NOW)
     _wait_for(lambda: any("已重置" in t for t in sender.texts))
 
     # 新产物（三份）已覆盖
@@ -356,9 +356,9 @@ def test_failed_replace_keeps_the_whole_previous_session(env):
     _pending(store)
     gateway._llm_client = _StubLLM(has_points=False)
 
-    gateway.handle(_inbound("作业书"))
+    gateway.handle(_inbound("作业书"), now=NOW)
     _wait_for(lambda: any("换一份作业书会把它们整个换掉" in t for t in sender.texts))
-    gateway.handle(_inbound(RESET_CONFIRM_WORD))
+    gateway.handle(_inbound(RESET_CONFIRM_WORD), now=NOW)
     _wait_for(lambda: any("旧产物原样没动" in t for t in sender.texts))
 
     assert replies.NO_RUBRIC_FOUND in sender.texts
@@ -376,5 +376,38 @@ def test_help_and_command_list_mention_the_new_command():
     assert RESET_WORD in replies.HELP_TEXT
     assert RESET_WORD in replies.COMMAND_LIST_TEXT
     assert RESET_CONFIRM_WORD in replies.HELP_TEXT
+
+
+# ---------- 5. 时间炸弹防线：TTL 判据必须跟着**注入的 now** 走 ----------
+
+
+def test_pending_file_ttl_follows_the_injected_clock(env):
+    """发文件的有效期由**传进来的 now** 说了算，不许偷看墙上时间（2026-09-16 修）。
+
+    这一条是给两次同类事故上的锁：
+      * `test_confirm_word_is_exempt_from_the_mention_gate_only_while_the_window_is_open`
+        —— `_is_reset_reply()` 自己读 `datetime.now()`；
+      * 本文件三条「换 PDF」用例 —— `_pending()` 把 `received_at` 写成冻结的 `NOW`，
+        而 `PENDING_FILE_TTL`（30 分钟）拿墙上时间比 ⇒ **过了 20:30 必挂**
+        （实测：同一条 `feat/reset-command` 分支上原样复现，不是合并引入的）。
+
+    修法：`Gateway.handle(inbound, now=…)` 一路传给 `route()`。于是
+    「同一份盘面 + 同一个 now」= 同一个结果，跑一万年也不变。
+    """
+    gateway, store, sender = env
+    _seed_old_session(store)
+    _pending(store)                                  # received_at = NOW（冻结）
+
+    # ① 用同一个 now：文件算"新鲜"，走「换 PDF 要先确认」那条路
+    gateway.handle(_inbound("作业书"), now=NOW)
+    _wait_for(lambda: any("换一份作业书会把它们整个换掉" in t for t in sender.texts))
+    assert replies.RESET_REPLACE_HEADER in sender.texts[-1]
+    assert store.load_assignment().title == "旧作业"          # 还没动
+
+    # ② 把 now 往后推 31 分钟（> 30 分钟有效期）：文件算过期 ⇒ 回「先把文件发给我」
+    late = NOW + timedelta(minutes=31)
+    gateway.handle(_inbound("作业书"), now=late)
+    assert sender.texts[-1] == replies.FILE_MISSING
+    assert store.load_assignment().title == "旧作业"          # 依然一个字节都没动
 
 
