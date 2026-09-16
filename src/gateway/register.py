@@ -26,6 +26,7 @@ __all__ = [
     "REGISTER_TTL",
     "REGISTER_CANCEL_WORDS",
     "is_cancel",
+    "is_reply_word",
     "looks_like_form",
     "classify",
     "register_begin",
@@ -125,6 +126,16 @@ def classify(block: dict, inbound: Inbound, text: str, now: datetime | None = No
     return "step" if is_initiator else "silent"
 
 
+def is_reply_word(text: str) -> bool:
+    """这条消息是不是登记窗口的**回话词**（「同意」/逃生词）—— 供 router 的 @ 门豁免用（D-69）。
+
+    机器人自己在提示里说了「回复「同意」保存」，用户照做却被静默丢弃不合理；
+    而且这两个词动作明确（确认 / 退出），闲聊里打出来也不至于误伤 ——
+    登记窗口本来就有"回复别的就作废"的既有设计。
+    """
+    return (text or "").strip() in {_AGREE, *REGISTER_CANCEL_WORDS}
+
+
 def register_cancel(inbound: Inbound, state: dict, now: datetime | None = None) -> Outcome:
     """逃生词：主动退出登记窗口（必修 1）。只认发起人，旁人说了不算。
 
@@ -141,9 +152,18 @@ def register_cancel(inbound: Inbound, state: dict, now: datetime | None = None) 
 
 
 def register_step(
-    text: str, inbound: Inbound, state: dict, now: datetime | None = None
+    text: str,
+    inbound: Inbound,
+    state: dict,
+    now: datetime | None = None,
+    *,
+    plain: str | None = None,
 ) -> Outcome:
     """awaiting=register 时的分流：collect（填表）/ confirm（确认）。
+
+    ``text`` = **原文**（collect 要靠它读 @ 段的 open_id）；``plain`` = **剥掉 @段后的正文**，
+    只有确认阶段用得上（D-69 之后群里要 @机器人，原文永远对不上「同意」这个字面量）。
+    ``plain=None`` = 调用方没给（老调用方式 / 单测）→ 退回用 ``text``。
 
     三条纪律（外审必修 1、2）：
       * **过期判在发起人之前**（顺序有讲究）：超时的窗口已经作废，谁说话都该把它清掉。
@@ -163,7 +183,10 @@ def register_step(
     if stage == "collect":
         return _collect(text, inbound, state, block, now)
     if stage == "confirm":
-        return _confirm(text, inbound, state, block, now)
+        # ⚠️ 确认阶段必须用**剥掉 @段之后**的正文（``plain``）：D-69 之后群里要 @机器人，
+        # 原文是 "@_user_1 同意" —— 拿原文比 "同意" 会一律不相等、把每次确认都当"回复别的"作废。
+        # collect 阶段反过来：它要**原文**，@ 占位符是"这行 @ 了谁"的唯一线索（D-34）。
+        return _confirm(plain if plain is not None else text, inbound, state, block, now)
     # 状态缺胳膊少腿：作废，别把用户卡在 waiting 里
     return Outcome(replies=(reply(inbound, replies.REGISTER_CANCELLED),), state=_cleared(state))
 
