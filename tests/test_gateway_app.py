@@ -316,12 +316,15 @@ def test_empty_rubric_stops_before_m3_and_keeps_existing_products(env):
     gateway._llm_client = llm
     _seed_pending_file(store)
 
+    # 换作业书要先确认（2026-09-16 口径）：盘上已经有产物 ⇒ 先出清单，组长回确认词才动手
     gateway.handle(_inbound("作业书"))
+    assert replies.RESET_REPLACE_HEADER in sender.texts[-1]
+    gateway.handle(_inbound("确定重置"))
 
-    assert sender.texts[0] == replies.PARSING
-    assert sender.texts[-1] == replies.NO_RUBRIC_FOUND
+    assert replies.NO_RUBRIC_FOUND in sender.texts                # 拒拆那句
+    assert "旧产物原样没动" in sender.texts[-1]                    # 换 PDF 失败 ⇒ 这一场保住
     assert llm.m3_called is False                                   # 没起 M3、不烧第二次 LLM
-    # 拒拆时一个字都不写（P2）：三份产物全是旧的
+    # 拒拆时一个字都不写（P2），**而且换 PDF 失败不该把这一场弄没**：三份产物全是旧的
     assert [p.id for p in store.load_rubric()] == ["R_old"]
     assert [c.task_id for c in store.load_cards()] == ["T_seed"]
     assert store.load_assignment().title == "旧作业"
@@ -1118,11 +1121,12 @@ def test_m3_failure_keeps_the_previous_snapshot(env):
     gateway._llm_client = _M3FailsLLM()
     _seed_pending_file(store)
 
+    # 换 PDF 要先确认；确认之后才会真的跑 M1+M3
     gateway.handle(_inbound("作业书"))
+    gateway.handle(_inbound("确定重置"))
 
-    assert sender.texts[0] == replies.PARSING
     assert sender.texts[-1] == replies.PARSE_FAILED
-    # M1 的产物不能在 M3 失败时单独留下来：三份全是旧的
+    # M1 的产物不能在 M3 失败时单独留下来：三份全是旧的（换 PDF 失败也不动这一场）
     assert [p.id for p in store.load_rubric()] == ["R_old"]
     assert [c.task_id for c in store.load_cards()] == ["T_seed"]
     assert store.load_assignment().title == "旧作业"
