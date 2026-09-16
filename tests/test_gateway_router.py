@@ -593,10 +593,14 @@ def test_expired_window_still_records_a_completion_mark():
 
 
 def test_expired_window_still_runs_a_decompose_command():
-    """F3 同款：过期窗口 + 「拆解」→ 既出总表、又照常起重活。"""
+    """F3 同款：过期窗口 + 「拆解」→ 既出总表、又照常起重活。
+
+    发送者必须是花名册成员：M1/M3 现在有身份闸（F1，2026-09-16 加固），
+    本用例测的是"过期窗口不吞指令"，与身份无关，所以用成员发。
+    """
     cards, roster = _m4_fixtures()
     outcome = route(
-        _inbound("拆解"),
+        _inbound("拆解", sender_open_id="ou_zhang"),
         _expired_preference_state(),
         roster,
         cards=cards,

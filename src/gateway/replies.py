@@ -19,6 +19,8 @@ __all__ = [
     "DECOMPOSING",
     "NEEDS_RUBRIC",
     "NO_RUBRIC_FOUND",
+    "MAIN_CHAIN_NOT_MEMBER",
+    "MAIN_CHAIN_NEED_REGISTER",
     "VOTE_GENERATING",
     "VOTE_NEED_GROUP",
     "VOTE_NEED_ROSTER",
@@ -133,6 +135,14 @@ NEEDS_RUBRIC = "还没有评分点：先把作业书文件发给我，再回复�
 NO_RUBRIC_FOUND = (
     "这份文件里我没找到评分标准（评分表 / 成绩评定 那一小节）。"
     "为了不瞎拆，我先停在这里 —— 请确认作业书里有没有评分标准，或换一份带评分标准的文件。"
+)
+# M1 / M3 的身份闸（F1，2026-09-16）：这两条会整份覆盖全组产物，所以只认花名册成员。
+MAIN_CHAIN_NOT_MEMBER = (
+    "「作业书」/「拆解」会整份换掉全组的评分点和任务卡，所以我只认花名册里的成员。"
+    "先在群里发「登记」，让组长把大家 @ 进去，再来找我。"
+)
+MAIN_CHAIN_NEED_REGISTER = (
+    "还没有花名册：先在群里发「登记」（组长填那张表、把组员 @ 进去），再发「作业书」。"
 )
 
 # ---- M2 方向候选 + 群内投票（§7.1 / §7.6 / D-35 / D-36）----
