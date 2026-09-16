@@ -44,7 +44,7 @@ from eval.report import (
     render,
 )
 
-__all__ = ["main", "load_docs", "missing_doc_files", "snapshot_ready"]
+__all__ = ["main", "load_docs", "missing_doc_files", "resolve_doc_file", "snapshot_ready"]
 
 EVAL_DIR = Path(__file__).resolve().parent
 DOCS_JSON = EVAL_DIR / "docs.json"
@@ -58,6 +58,9 @@ SNAPSHOT_MANIFEST = "_snapshot.json"
 # 跑评测前清掉的线上产物先备份到这里（data/ 整个目录已被 .gitignore 排除）。
 DATA_BACKUP_DIR = ".eval-backup"
 STAMP_FORMAT = "%Y-%m-%d_%H%M%S"
+# 真实作业书所在的目录（**不入库**）。`docs.json` 里只写文件名，目录从环境变量来 ——
+# 这样公开仓库里不会出现任何人的本机路径（PII），换台机器也只需换个环境变量。
+DOCS_DIR_ENV = "EVAL_DOCS_DIR"
 
 
 def load_docs(path: str | Path = DOCS_JSON) -> list[dict]:
@@ -65,6 +68,20 @@ def load_docs(path: str | Path = DOCS_JSON) -> list[dict]:
     if not isinstance(payload, list) or not payload:
         raise ValueError(f"{path}: 顶层必须是非空数组")
     return payload
+
+
+def resolve_doc_file(raw: str | Path) -> Path:
+    """作业书文件 → 本机真实路径。
+
+    绝对路径原样返回（兼容老用法）；相对路径（`docs.json` 里现在只存**文件名**）
+    按环境变量 ``EVAL_DOCS_DIR`` 拼。**没配这个变量时**返回原样 —— 由闸 1 报
+    "这些作业书在本机不存在"，并在提示里告诉人去配它。
+    """
+    path = Path(str(raw))
+    if path.is_absolute():
+        return path
+    base = os.environ.get(DOCS_DIR_ENV, "").strip()
+    return (Path(base) / path) if base else path
 
 
 def missing_doc_files(docs: list[dict]) -> list[str]:
@@ -78,7 +95,8 @@ def missing_doc_files(docs: list[dict]) -> list[str]:
     missing: list[str] = []
     for doc in docs:
         raw = str(doc.get("file") or "")
-        if not raw or not Path(raw).exists():
+        resolved = resolve_doc_file(raw) if raw else Path("")
+        if not raw or not resolved.exists():
             missing.append(f"{doc.get('doc_id') or '(没写 doc_id)'} → {raw or '(没写 file)'}")
     return missing
 
@@ -246,7 +264,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"           {item}", file=sys.stderr)
             print(
                 "           → 评测没开工：data/ 里的产物与 eval/report.md 都没动。"
-                "（eval/docs.json 里是绝对路径，换机器要先改成本机路径）",
+                f"（docs.json 里只写文件名，请把真实作业书目录配到环境变量 {DOCS_DIR_ENV}，"
+                "写进 .env 即可 —— .env 已被 gitignore）",
                 file=sys.stderr,
             )
             return 2
@@ -270,7 +289,7 @@ def main(argv: list[str] | None = None) -> int:
             backup = _reset_data(data_dir, stamp)
             if backup is not None:
                 print(f"[M8] 上一轮产物已备份到 {backup}")
-            rc = main_chain(["--file", doc["file"]])
+            rc = main_chain(["--file", str(resolve_doc_file(doc["file"]))])
             _snapshot(doc_id, data_dir, stamp)
         rubric, cards = load_runs(RUNS_DIR / doc_id)
         results.append(compute(baseline, rubric, cards, rc=rc))
