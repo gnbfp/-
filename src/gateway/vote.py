@@ -99,6 +99,13 @@ def command(
     if inbound.chat_type != "group":
         # 投票是群里的动作（T05 原文"回复数字投票"）。私聊发这句只指出正确去处。
         return Outcome(replies=(reply(inbound, replies.VOTE_NEED_GROUP),))
+    # 身份闸（2026-09-16 补审 §1.10 e）：这一条起的是 **M2 的 LLM 调用**（30 秒 + 一笔钱），
+    # 而且会把候选发群、把 awaiting 改成 vote。花名册为空时上面已经拒了（fail-closed），
+    # 所以这里只判"是不是名册里的人" —— 与 M1/M3 的 _main_chain_guard 同款口径。
+    if not inbound.sender_open_id or inbound.sender_open_id not in {
+        member.open_id for member in members
+    }:
+        return Outcome(replies=(reply(inbound, replies.VOTE_NOT_MEMBER),))
 
     block, expired = read_window(state, now)
     if block and not expired and not block.get("closed"):

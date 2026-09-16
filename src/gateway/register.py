@@ -80,6 +80,10 @@ def register_begin(
         "register": {
             "stage": "collect",
             "initiator_open_id": inbound.sender_open_id,
+            # 多群隔离（§1.10）：登记窗口自己记下"在哪个群登记的"。router 的
+            # group_allowed() 靠它放行这个群（换群/首次登记时这个群还不在 known_groups 里），
+            # 也靠它把别的群发来的表单/「同意」挡在状态机之外。
+            "chat_id": inbound.chat_id,
             "leader": None,
             "members": [],
             # collect 也要有 TTL：原先设 None ⇒ 发一次「登记」不填表就永久锁群（必修 1）
@@ -221,6 +225,8 @@ def _collect(
         "stage": "confirm",
         # 必须把发起人带过去：confirm 阶段全靠它挡住"旁人一句「同意」就落盘"（必修 2）
         "initiator_open_id": block.get("initiator_open_id") or inbound.sender_open_id,
+        # 群也要带过去（§1.10）：confirm 阶段（「同意」/回别的话）同样只认那个群
+        "chat_id": block.get("chat_id") or inbound.chat_id,
         "leader": {"open_id": leader_mention.open_id, "name": _display(leader_mention)},
         "members": [{"open_id": m.open_id, "name": _display(m)} for m in others],
         "expires_at": expires_at,
@@ -259,6 +265,16 @@ def _confirm(
         "registered_at": _iso(now or datetime.now()),
         "confirmed_by": inbound.sender_open_id,
     }
+    new_state = _cleared(state)
+    # 多群隔离（2026-09-16 补审 §1.10）：登记完成 = **这个群**就是本场作业的群。
+    # 从此别的群只能发「帮助」和「登记」（router 1.7 那道闸）；
+    # 在别的群再登记一次 = 换群（adopt），所以这里是**覆盖**而不是追加。
+    group = block.get("chat_id") or inbound.chat_id
+    if group:
+        new_state["known_groups"] = [group]
+        # group_chat_id 是"群广播发到哪"（M4 总表 / M6 @催办 都取它）—— 一并钉到这个群，
+        # 免得它还是"最后说话的那个群"（app 层 _remember_group 也按 known_groups 收紧了）
+        new_state["group_chat_id"] = group
     return Outcome(
         replies=(
             reply(
@@ -269,7 +285,7 @@ def _confirm(
                 ),
             ),
         ),
-        state=_cleared(state),
+        state=new_state,
         save_roster=roster,
     )
 

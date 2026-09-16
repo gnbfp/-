@@ -222,9 +222,19 @@ def test_non_numeric_junk_is_rejected_without_writing():
     assert outcome.state is None
 
 
-def test_other_group_digit_is_ignored_silently():
-    outcome = route(_inbound("2", chat_id="c_other"), _state(), _roster(), now=OPEN)
-    assert outcome == Outcome()
+def test_other_group_digit_is_not_a_vote_and_gets_one_line():
+    """别的群的数字**绝不能被算成票**（§1.10 多群隔离 / D-36）。
+
+    2026-09-16 口径变化：这条以前断言的是"**静默**"（``Outcome()``）。加了多群隔离那道闸
+    之后，别的群的 @ 会得到**一行说明** —— 沉默会让人以为"机器人坏了"（这个项目已经为
+    "@ 了没反应"付过一次排查成本），而这一行既说清原因、又不碰任何状态。
+    **票数仍然不变、窗口一动不动**（下面两条断言就是这条底线）。
+    """
+    state = _state(votes={"ou_li": 1})
+    outcome = route(_inbound("2", chat_id="c_other"), state, _roster(), now=OPEN)
+    assert _texts(outcome) == [replies.GROUP_NOT_THIS_SESSION]
+    assert outcome.state is None                # 不落盘 ⇒ 票数/窗口一点没动
+    assert outcome.save_direction is None
 
 
 def test_vote_window_does_not_eat_commands():

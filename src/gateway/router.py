@@ -36,6 +36,8 @@ __all__ = [
     "strip_mentions",
     "route",
     "remember_file",
+    "known_group_ids",
+    "group_allowed",
     "no_rubric_block",
     "no_rubric_expired",
     "confirm_no_rubric",
@@ -74,6 +76,45 @@ NO_RUBRIC_TTL = timedelta(minutes=5)
 RESET_TTL = timedelta(minutes=5)
 
 
+# ---------- 多群隔离（2026-09-16 补审 §1.10）----------
+
+
+def known_group_ids(state: dict) -> list[str]:
+    """本场作业的群（正常只有一个）。
+
+    优先 ``known_groups`` —— 登记确认时由 ``register._confirm()`` 写入；
+    老 state（这个字段还不存在的场子）退回 ``group_chat_id``：**让升级前就存在的场子
+    也立刻受保护，不需要人工改数据**。两个都没有 = 还没认过群。
+    """
+    raw = [g for g in ((state or {}).get("known_groups") or []) if g]
+    if raw:
+        return raw
+    legacy = (state or {}).get("group_chat_id") or ""
+    return [legacy] if legacy else []
+
+
+def group_allowed(state: dict, chat_id: str) -> bool:
+    """这个群能不能算"本场的群"。
+
+    三条放行，其余一律不算：
+      ① **还没认过群**（旧 state / 刚起盘）—— 保持原行为，不然第一次「登记」都做不了；
+      ② ``chat_id`` ∈ 本场的群（登记过的）；
+      ③ 正**在这个群里**登记（登记窗口自己记的 ``chat_id``）—— 换群/首次登记都靠这条放行。
+
+    ⚠️ 为什么必须有这道闸（实测，§1.10）：机器人被拉进第二个群时，
+    「报告」的产物、M5 的匿名转达、M6 的 @催办都按 ``state.group_chat_id`` 发 ——
+    而那个值**任何群说一句话就会被改写**，于是会出现"组员甲的匿名提议发到了别的群"、
+    "组长在别的群 @我 起「重置」把本场删了"、"非成员在别的群 @我 起「方向」烧 30 秒 LLM"。
+    """
+    known = known_group_ids(state)
+    if not known:
+        return True                              # ① 还没认过群：保持原行为
+    if chat_id and chat_id in known:
+        return True                              # ② 登记过的群
+    block = (state or {}).get("register") or {}
+    return bool(chat_id) and chat_id == (block.get("chat_id") or "")   # ③ 正在这个群里登记
+
+
 def strip_mentions(text: str, mentions: Sequence[Mention] = ()) -> str:
     """剥掉 @段，只留正文。
 
@@ -107,15 +148,20 @@ def _is_register_reply(state: dict, text: str) -> bool:
     return (state or {}).get("awaiting") == "register" and register.is_reply_word(text)
 
 
-def _is_reset_reply(state: dict, text: str) -> bool:
+def _is_reset_reply(state: dict, text: str, now: datetime | None = None) -> bool:
     """「重置」窗口内，确认词豁免 @ 门。
 
     这是**同一个坑**：机器人提示"确认请回「确定重置」"，用户照做却被 @ 门静默吃掉 ——
     登记窗的「同意」在 D-69 之后就真机踩过一次（PR #20 修的），这里一开始就豁免。
     只在**窗口开着且没过期**时生效：没有窗口时，群里不 @ 我的「确定重置」照旧丢弃。
+
+    ``now`` **必须由调用方传进来**（2026-09-16 修）：原来这里偷看 ``datetime.now()``，
+    于是 ``test_reset.py`` 里那条把时间冻在 20:00 的用例，到了墙上时间 20:05 就**永久变红**
+    （实测：同一个分支 19:36 全绿、20:06 开始必挂）。``route()`` 手上本来就有 ``now``，
+    传下来即可 —— 这条链上不许再出现隐式的墙上时间。
     """
     block = (state or {}).get("reset") or {}
-    if not block or reset_expired(block):
+    if not block or reset_expired(block, now):
         return False
     return (text or "").strip() == RESET_CONFIRM_WORD
 
@@ -175,7 +221,11 @@ def route(
 
     # 1. 文件：只缓存，不干活（D-42：文字和附件必然是两条消息）
     #    **免 @ 门**：飞书不允许"文字 + 附件"同一条，所以发文件时没法同时 @（D-69）。
+    #    多群隔离（§1.10）：别的群发的文件**连缓存都不进** —— pending_file 只有一个槽位，
+    #    让别群的文件挤进来就是"本群刚发的作业书被顶掉"的那种串味。
     if inbound.message_type == "file":
+        if inbound.chat_type == "group" and not group_allowed(state, inbound.chat_id):
+            return Outcome(replies=(reply(inbound, replies.GROUP_NOT_THIS_SESSION),))
         return remember_file(inbound, state, now)
     #    图片：读不了就直说（用户 2026-09-12 拍板，不再静默），但仍然**不入缓存** ——
     #    必修 3 的底线是"一张图不能把刚发来的作业书 PDF 挤掉"。其余类型保持静默。
@@ -206,7 +256,7 @@ def route(
     ):
         form_exempt = in_register_window and register.looks_like_form(inbound)
         if not form_exempt and not _is_register_reply(state, text) and not _is_reset_reply(
-            state, text
+            state, text, now
         ):
             return Outcome()               # 没 @ 我 → 静默丢弃，一个字都不回
 
@@ -218,6 +268,20 @@ def route(
     #     位置刻意放在 awaiting 之前：登记确认阶段回「帮助」不该被当成"回复别的就作废"。
     if _is_help(text):
         return Outcome(replies=(reply(inbound, replies.HELP_TEXT),))
+
+    # 1.7 【多群隔离】（2026-09-16 补审 §1.10）：**不是本场的群就什么都不做**。
+    #     位置：@ 门之后（没 @ 我的闲聊照旧静默）、「帮助」之后（问到用法还是照答，
+    #     这条不读不写 state、也回不到群里去，零风险）、状态机之前 ——
+    #     必须排在状态机前面：窗口（登记/投票/志愿）是**全局单值**，
+    #     让别群的消息进得来，就会出现"别群的人在填本群的登记表""别群的数字被算成票"。
+    #     两条放行：①「登记」是进场的唯一入口（换群/首次登记都要它）；
+    #              ② 正在登记的那个群由 group_allowed() 的 ③ 放行（「同意」/表单是回话）。
+    if (
+        inbound.chat_type == "group"
+        and not group_allowed(state, inbound.chat_id)
+        and not text.startswith("登记")
+    ):
+        return Outcome(replies=(reply(inbound, replies.GROUP_NOT_THIS_SESSION),))
 
     # 2. 状态优先：裸数字/表单怎么解释，全看 state.json 的 awaiting
     awaiting = (state or {}).get("awaiting")
@@ -501,8 +565,10 @@ def _proposal(
         return Outcome(replies=(reply(inbound, replies.PROPOSAL_EMPTY),))
 
     group = (state or {}).get("group_chat_id") or ""
-    if not group:
-        # 发不到群就别假装发了：不转达、也不落盘（留痕是给"已发布的内容"追责用的）
+    if not group or not group_allowed(state, group):
+        # 发不到群就别假装发了：不转达、也不落盘（留痕是给"已发布的内容"追责用的）。
+        # 多群隔离（§1.10 b）：记下的群若不是本场的群，同样按"没有群"处理 ——
+        # 否则匿名提议会被发到别的群，而本群永远看不到（实测就是这样）。
         return Outcome(replies=(reply(inbound, replies.NEED_GROUP),))
 
     return Outcome(
