@@ -225,21 +225,26 @@ def route(
         if hit is not None:
             return _with_closing(hit, closing)
         return _with_closing(
-            _merge(
-                _by_prefix(
-                    inbound,
-                    state,
-                    roster,
-                    has_rubric=has_rubric,
-                    body_mode=body_mode,
-                    cards=cards,
-                    preferences=preferences,
-                    assignments=assignments,
-                    now=now,
-                    source_title=source_title,
-                ),
+            _note_discarded_vote(
+                inbound,
                 state,
-                original,
+                _merge(
+                    _by_prefix(
+                        inbound,
+                        state,
+                        roster,
+                        has_rubric=has_rubric,
+                        body_mode=body_mode,
+                        cards=cards,
+                        preferences=preferences,
+                        assignments=assignments,
+                        now=now,
+                        source_title=source_title,
+                    ),
+                    state,
+                    original,
+                ),
+                now,
             ),
             closing,
         )
@@ -401,6 +406,31 @@ def _report(inbound: Inbound, roster, assignments: Sequence) -> Outcome:
     if not assignments:
         return Outcome(replies=(reply(inbound, replies.REPORT_NEED_ASSIGNMENTS),))
     return Outcome(replies=(reply(inbound, replies.REPORT_GENERATING),), pipeline="report")
+
+
+def _note_discarded_vote(
+    inbound: Inbound, state: dict, outcome: Outcome, now: datetime | None = None
+) -> Outcome:
+    """投票窗口没落定就被别的指令顶掉 → **补一句交代**（票不能无声无息地消失）。
+
+    口径来自 2026-09-16 的真机：三个人各投 1/2/3 ⇒ 无过半；紧接着 20:17 那句
+    「你想做哪一块」切到 M4（`preference.open_window` 会把 `state.vote` 整块清掉）⇒
+    群里**一句交代都没有**，`data/direction.json` 从未落盘，最后的报告里也就没有"已定方向"。
+    D-61 ③ 的关闭三条（过半 / 超时 / 封盘）当时都不适用 —— 这是它**没定义**的那个转移。
+
+    现在：切走时先把票数明细说清楚，并说明"这些票作废、要定就重发「方向」"。
+    至于"要不要改成自动封盘/取票最多"，那是**产品拍板**的事，代码不替人拍板（D-36 同款纪律）。
+
+    三个"不必说话"的情况由 ``vote.discarded_note()`` 判（没窗口 / 一张票都没有 / 已冻住或已过期）；
+    这里只负责"确实切走了"这半件事：**这次消息改了 state，而且新 state 里已经没有投票窗口**。
+    ``state`` 传的是**切走之前**那份（收口后的状态已经同步进去了）。
+    """
+    note = vote.discarded_note((state or {}).get("vote") or {}, now)
+    after = outcome.state
+    if not note or after is None or after.get("vote"):
+        return outcome                      # 没话可说 / 没改状态（窗口还在）/ 换了新窗口
+    group = ((state or {}).get("vote") or {}).get("chat_id") or inbound.chat_id
+    return replace(outcome, replies=(Reply(chat_id=group, text=note), *outcome.replies))
 
 
 def _merge(outcome: Outcome, state: dict, original: dict) -> Outcome:
