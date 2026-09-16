@@ -39,6 +39,12 @@ __all__ = [
     "no_rubric_block",
     "no_rubric_expired",
     "confirm_no_rubric",
+    "RESET_WORD",
+    "RESET_CONFIRM_WORD",
+    "reset_block",
+    "reset_expired",
+    "request_reset",
+    "confirm_reset",
 ]
 
 # 7 条前缀里两条带变体：提议的冒号全半角、完成的 Tn 容忍空格与大小写。
@@ -49,6 +55,10 @@ COMPLETE_BARE = re.compile(r"^完成\s*$")
 # 「帮助」/「help」/「使用说明」= 要一份用法清单（D-71）。**在任何状态机之前**处理：
 # 看一眼就回答，不改 awaiting、不碰票数/志愿/花名册 —— 纯增量，不影响别的流程。
 HELP_WORDS = ("帮助", "help", "使用说明")
+# 「重置」= 清掉**这一场**的产物、回到"刚登记完"的状态（第 11 条指令，2026-09-16）。
+# 两段式：先出"要清什么"的清单，组长回**确认词**才真删（防误删）；窗口 5 分钟、回别的作废。
+RESET_WORD = "重置"
+RESET_CONFIRM_WORD = "确定重置"
 
 _MENTION_PLACEHOLDER = re.compile(r"@_user_\d+")
 
@@ -59,6 +69,9 @@ PENDING_FILE_TTL = timedelta(minutes=30)
 # 无评分点模式的确认窗口（口径 A，2026-09-16）。与登记窗口同款 5 分钟：组长看到
 # "我没找到评分标准"那句话之后，回来补一句「按正文拆」就够了；过期就当没有。
 NO_RUBRIC_TTL = timedelta(minutes=5)
+# 「重置」的确认窗口（2026-09-16）：与登记/无评分点同款 5 分钟 —— 组长看清楚清单、
+# 回一句「确定重置」就够了；过期就当没这回事，要重来就再发一次「重置」。
+RESET_TTL = timedelta(minutes=5)
 
 
 def strip_mentions(text: str, mentions: Sequence[Mention] = ()) -> str:
@@ -92,6 +105,19 @@ def _is_register_reply(state: dict, text: str) -> bool:
     那正是要治的误触发场景）。
     """
     return (state or {}).get("awaiting") == "register" and register.is_reply_word(text)
+
+
+def _is_reset_reply(state: dict, text: str) -> bool:
+    """「重置」窗口内，确认词豁免 @ 门。
+
+    这是**同一个坑**：机器人提示"确认请回「确定重置」"，用户照做却被 @ 门静默吃掉 ——
+    登记窗的「同意」在 D-69 之后就真机踩过一次（PR #20 修的），这里一开始就豁免。
+    只在**窗口开着且没过期**时生效：没有窗口时，群里不 @ 我的「确定重置」照旧丢弃。
+    """
+    block = (state or {}).get("reset") or {}
+    if not block or reset_expired(block):
+        return False
+    return (text or "").strip() == RESET_CONFIRM_WORD
 
 
 def _mentioned_bot(inbound: Inbound, bot_open_id: str = "", bot_name: str = "") -> bool:
@@ -179,7 +205,9 @@ def route(
         inbound, bot_open_id, bot_name
     ):
         form_exempt = in_register_window and register.looks_like_form(inbound)
-        if not form_exempt and not _is_register_reply(state, text):
+        if not form_exempt and not _is_register_reply(state, text) and not _is_reset_reply(
+            state, text
+        ):
             return Outcome()               # 没 @ 我 → 静默丢弃，一个字都不回
 
     if not text:
@@ -355,8 +383,17 @@ def _by_prefix(
     if text.startswith("按正文拆"):
         return confirm_no_rubric(inbound, state, roster, now)
 
+    # 「重置」两段式（第 11 条指令，2026-09-16）：先出清单，组长回确认词才真删。
+    # 「确定重置」不以「重置」开头，所以两条前缀互不干扰；确认词排在前面只是为了好读。
+    if text.startswith(RESET_CONFIRM_WORD):
+        return confirm_reset(inbound, state, roster, now)
+    if text.startswith(RESET_WORD):
+        return request_reset(inbound, state, roster, now=now)
+
     if text.startswith("作业书"):
-        return _assignment(inbound, state, now)
+        return _assignment(
+            inbound, state, now, has_rubric=has_rubric, has_cards=bool(cards)
+        )
     if text.startswith("拆解"):
         return Outcome(
             replies=(reply(inbound, replies.DECOMPOSING if has_rubric else replies.NEEDS_RUBRIC),),
@@ -531,9 +568,29 @@ def remember_file(inbound: Inbound, state: dict, now: datetime | None = None) ->
     )
 
 
-def _assignment(inbound: Inbound, state: dict, now: datetime | None = None) -> Outcome:
+def _assignment(
+    inbound: Inbound,
+    state: dict,
+    now: datetime | None = None,
+    *,
+    has_rubric: bool = False,
+    has_cards: bool = False,
+) -> Outcome:
+    """「作业书」：有可用文件就起主链路。
+
+    **盘上已经有一场的产物时**（``has_rubric or has_cards``）改成走「重置」那套确认
+    （2026-09-16 口径 B）：先列出"换掉会失去什么"，组长回「确定重置」才动手。
+    为什么：换 PDF 只覆盖 assignment/rubric/cards **三份文件**，而方向、票数、志愿、分配
+    全是上一场的 —— 不确认就换，下一次「报告」会把新旧混在一张总表里。
+    **这也顺带省 token**：确认之前不再解析新文件（M1 一次要花 30 秒和一笔钱）。
+    """
     if not _pending_file(state, now, inbound=inbound):
         return Outcome(replies=(reply(inbound, replies.FILE_MISSING),))
+    if has_rubric or has_cards:
+        return Outcome(
+            state={**(state or {}), "reset": reset_block("replace", inbound, now)},
+            pipeline="reset_request",
+        )
     return Outcome(replies=(reply(inbound, replies.PARSING),), pipeline="assignment")
 
 
@@ -637,3 +694,83 @@ def confirm_no_rubric(
     return Outcome(
         replies=(reply(inbound, replies.NO_RUBRIC_STARTED),), pipeline="no_rubric"
     )
+
+
+# ---------- 「重置」：清掉这一场的产物（第 11 条指令，2026-09-16）----------
+#
+# 需求（用户 2026-09-16 提出）：想换一份作业书、或者干脆从头来一遍时，
+# 能一句话清掉之前的数据，但**必须机器人再问一次、确认后才执行**（防误删）。
+#
+# 为什么真需要它：`data/` 是**全局共享、不分群**（D-57 的有意取舍），而换 PDF 只覆盖
+# assignment/rubric/cards 三份 —— 方向、票数、志愿、分配全是上一场的，混在一起会让
+# 「报告」出假表、旧窗口还会吃新消息。所以"忘掉上一场"要有**一个正式动作**，
+# 而不是靠人去手删文件。
+
+
+def reset_block(kind: str, inbound: Inbound, now: datetime | None = None) -> dict:
+    """建一个"等我确认重置"的窗口（写进 ``state.reset``）。
+
+    ``kind``：``"wipe"`` = 只清（第 11 条指令的第一步）；
+    ``"replace"`` = 换作业书触发的（清单里会说明"然后按新文件重跑"）。
+    """
+    moment = now or datetime.now()
+    return {
+        "kind": kind if kind in ("wipe", "replace") else "wipe",
+        "chat_id": inbound.chat_id,
+        "requested_by": inbound.sender_open_id,
+        "opened_at": moment.isoformat(timespec="seconds"),
+        "expires_at": (moment + RESET_TTL).isoformat(timespec="seconds"),
+    }
+
+
+def reset_expired(block: dict, now: datetime | None = None) -> bool:
+    """窗口过期了没。时间戳脏了当没过期（与 ``_stale_pending`` 同款防御）。"""
+    raw = (block or {}).get("expires_at")
+    if not raw:
+        return False
+    try:
+        expires = datetime.fromisoformat(str(raw))
+    except ValueError:
+        return False
+    return (now or datetime.now()) >= expires
+
+
+def request_reset(
+    inbound: Inbound, state: dict, roster, now: datetime | None = None
+) -> Outcome:
+    """「重置」第一步：只认组长 + 只认群里，开一个待确认窗口（**不删任何东西**）。
+
+    清单由 app 层渲染（它才读得到盘上的计数）—— 与「方向」「报告」同一个分工：
+    router 决定"能不能起"，app 说"具体是什么"。
+    """
+    if inbound.chat_type != "group":
+        return Outcome(replies=(reply(inbound, replies.RESET_NEED_GROUP),))
+    if not inbound.sender_open_id or inbound.sender_open_id != getattr(roster, "leader", None):
+        return Outcome(replies=(reply(inbound, replies.RESET_NEED_LEADER),))
+    return Outcome(
+        state={**(state or {}), "reset": reset_block("wipe", inbound, now)},
+        pipeline="reset_request",
+    )
+
+
+def confirm_reset(
+    inbound: Inbound, state: dict, roster, now: datetime | None = None
+) -> Outcome:
+    """「确定重置」：确认 → 真删（app 层先整份备份再删）。
+
+    三重校验，缺一不可：
+      ① **只认"发起那次重置的人"** —— 「重置」这条命令本身只认组长（``request_reset``），
+         所以这里同时满足"只认组长"；而换作业书那一路的发起人是**发文件的那位**
+         （他是谁由 M1/M3 的身份闸保证是花名册成员），让他自己确认第二次，防的是误删。
+      ② **只在发起那次重置的会话里认**（与「作业书」的 D-47 同款）。
+      ③ **窗口未过期**（``RESET_TTL``）。
+    """
+    block = (state or {}).get("reset") or {}
+    requester = block.get("requested_by") or ""
+    if not inbound.sender_open_id or inbound.sender_open_id != requester:
+        return Outcome(replies=(reply(inbound, replies.RESET_NEED_REQUESTER),))
+    if not block or reset_expired(block, now):
+        return Outcome(replies=(reply(inbound, replies.RESET_NO_PENDING),))
+    if block.get("chat_id") and block["chat_id"] != inbound.chat_id:
+        return Outcome(replies=(reply(inbound, replies.RESET_NO_PENDING),))
+    return Outcome(pipeline="reset_confirm")

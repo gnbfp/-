@@ -153,13 +153,19 @@ def test_stranger_cannot_start_m3_by_mentioning_the_bot_in_the_group():
 
 
 def test_member_can_still_start_m1_from_a_private_chat():
-    """不能把正常路径堵死：D-42 ④ 的演示方式就是各自私聊投递作业书。"""
+    """不能把正常路径堵死：D-42 ④ 的演示方式就是各自私聊投递作业书。
+
+    ``has_rubric=False`` = 盘上还没有产物（第一份作业书）⇒ 直接起主链路。
+    盘上**已有**产物时走的是"先确认再换"（2026-09-16 口径），见 ``test_reset.py``。
+    """
     pending = {"file_key": "fk_1", "chat_id": "oc_dm_a", "message_id": "m0",
                "received_at": NOW.isoformat(timespec="seconds")}
     outcome = _route(
         _inbound("作业书", chat_type="p2p", chat_id="oc_dm_a", sender="ou_a"),
         {"pending_file": pending},
         _roster(),
+        has_rubric=False,
+        cards=(),
     )
     assert _texts(outcome) == [replies.PARSING]
     assert outcome.pipeline == "assignment"

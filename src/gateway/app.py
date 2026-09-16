@@ -15,6 +15,7 @@ import argparse
 import json
 import os
 import socket
+import shutil
 import sys
 import threading
 import time
@@ -49,13 +50,19 @@ from src.models import AssignmentMeta, AssignmentRecord, Preference, Roster
 from src.report.checklist import render_checklist
 from src.report.gantt import render_gantt
 from src.storage import (
+    ASSIGNMENT,
     ASSIGNMENTS,
+    CARDS,
+    DIRECTION,
     GANTT,
     PREFERENCES,
     PROPOSALS,
     REMINDERS,
     REPORT,
+    RUBRIC,
     SEEN,
+    STATE,
+    UPLOADS,
     JsonStore,
 )
 
@@ -67,6 +74,24 @@ _SEEN_LIMIT = 200
 # 单实例保护的守护端口（P0-E）：第二个进程 bind 不上就拒绝启动。
 INSTANCE_PORT = 47653
 LOCK_FILE = "app.lock"
+
+# 「重置」要清的文件（**不含** members.json / seen.json / app.lock —— 理由见 _wipe_session_data）。
+_SESSION_FILES = (
+    ASSIGNMENT,
+    RUBRIC,
+    CARDS,
+    DIRECTION,
+    PREFERENCES,
+    ASSIGNMENTS,
+    PROPOSALS,
+    REMINDERS,
+    REPORT,
+    GANTT,
+)
+
+
+def _backup_text(backup: Path | None) -> str:
+    return str(backup) if backup else "（盘上本来就没有产物，没有生成备份）"
 
 
 def _stamp() -> str:
@@ -456,6 +481,10 @@ class Gateway:
                 self._run_report(inbound)
             elif kind == "no_rubric":
                 self._run_no_rubric(inbound, state)
+            elif kind == "reset_request":
+                self._run_reset_request(inbound)
+            elif kind == "reset_confirm":
+                self._run_reset_confirm(inbound, state)
         except ExtractError as exc:
             self._send(reply(inbound, replies.EXTRACT_REJECTED.format(reason=exc)))
         except LLMError:
@@ -468,9 +497,15 @@ class Gateway:
                 self._forget_pending_file(pending.get("message_id", ""))
             elif kind == "no_rubric":
                 self._forget_no_rubric()
+            # 注意：``reset_request`` **不在这里清窗口** —— 那个窗口的意义就是"等确认"，
+            # 清了组长再回「确定重置」就变成"没等我确认的重置"了。它由确认（或超时）结束。
 
-    def _run_assignment(self, inbound: Inbound, state: dict) -> None:
-        """作业书 → 下载 → 抽文本 → M1 → **必须续跑 M3** → 核对清单发群（方案 §7）。"""
+    def _run_assignment(self, inbound: Inbound, state: dict) -> bool:
+        """作业书 → 下载 → 抽文本 → M1 → **必须续跑 M3** → 核对清单发群（方案 §7）。
+
+        返回 ``True`` = 三份产物已落盘；``False`` = 拒拆（没写盘，上一份产物原样）。
+        换作业书那条路（``_handle_replace_confirm``）靠这个返回值决定"要不要清下游旧数据"。
+        """
         pending = (state or {}).get("pending_file") or {}
         path = self.downloader.download(pending, self.store.uploads)
 
@@ -486,7 +521,7 @@ class Gateway:
             state["no_rubric"] = router.no_rubric_block(path, parsed.meta, inbound)
             self.store.save_state(state)
             self._send(reply(inbound, replies.NO_RUBRIC_FOUND))
-            return
+            return False
 
         # 三份产物必须**一起**落盘（F2）：M3 抛错时若 M1 的产物已经写下去，
         # 盘上就会留下“新 rubric + 旧 cards”的混用快照，下一轮「拆解」会拿新评分点去配旧卡。
@@ -512,6 +547,7 @@ class Gateway:
         if warnings:
             report += "\n\n" + "\n".join(f"[软警告] {w}" for w in warnings)
         self._send(reply(inbound, report))
+        return True
 
     def _run_no_rubric(self, inbound: Inbound, state: dict) -> None:
         """「按正文拆」（口径 A，2026-09-16）：从正文的交付要求建卡。
@@ -558,6 +594,173 @@ class Gateway:
         """清掉无评分点窗口 —— 本轮消费完就清（与 ``_forget_pending_file`` 同款）。"""
         state = self.store.load_state() or {}
         if state.pop("no_rubric", None) is not None:
+            self.store.save_state(state)
+
+    # ---------- 「重置」：清掉这一场的产物（第 11 条指令，2026-09-16）----------
+
+    def _run_reset_request(self, inbound: Inbound) -> None:
+        """「重置」第一步：把**将要被清掉的东西**列出来，等组长回「确定重置」。
+
+        这一步**一个字节都不删** —— 真正的删除在 ``_run_reset_confirm``。
+        清单在 app 层渲染（只有它读得到盘上的计数），与「方向」「报告」同一个分工。
+        """
+        state = self.store.load_state() or {}
+        block = state.get("reset") or {}
+        if not block:
+            self._send(reply(inbound, replies.RESET_NO_PENDING))
+            return
+        lines = self._reset_manifest()
+        if not lines:
+            # 盘上本来就干净：别让组长白确认一轮
+            self._send(reply(inbound, replies.RESET_NOTHING))
+            self._forget_reset()
+            return
+        header = (
+            replies.RESET_REPLACE_HEADER
+            if block.get("kind") == "replace"
+            else replies.RESET_REQUEST_HEADER
+        )
+        self._send(
+            reply(
+                inbound,
+                header
+                + "\n".join(f"· {line}" for line in lines)
+                + replies.RESET_REQUEST_FOOTER,
+            )
+        )
+
+    def _run_reset_confirm(self, inbound: Inbound, state: dict) -> None:
+        """「确定重置」：按窗口里的 ``kind`` 分流（换作业书那一路见下）。"""
+        block = (state or {}).get("reset") or {}
+        if not block:
+            self._send(reply(inbound, replies.RESET_NO_PENDING))
+            return
+        if block.get("kind") == "replace" and (state or {}).get("pending_file"):
+            self._handle_replace_confirm(inbound, state)
+            return
+        backup = self._wipe_session_data()
+        self._send(reply(inbound, replies.RESET_DONE.format(backup=_backup_text(backup))))
+
+    def _handle_replace_confirm(self, inbound: Inbound, state: dict) -> None:
+        """换作业书：**先按新文件跑一遍，成功了才清上一场的下游**。
+
+        为什么不"先清再跑"：新文件可能抽不到评分点（D-48）或者 LLM 挂了。那时若已经清空，
+        这一场的工作状态就没了（只能去 ``.reset-backup/`` 捞）。所以顺序反过来 ——
+        **失败 ⇒ 盘上一个字节都不动**（D-49 ② 的精神）；**成功 ⇒ 三份产物已被新文件覆盖，
+        再把方向 / 票数 / 志愿 / 分配 / 提议这些上一场的下游清掉**，免得新旧混在一张总表里。
+        """
+        backup = self._backup_session()
+        pending = (state or {}).get("pending_file") or {}
+        fresh = self.store.load_state() or {}
+        fresh["pending_file"] = pending          # 让 _run_assignment 拿得到那份文件
+        self.store.save_state(fresh)
+
+        ok = self._run_assignment(inbound, fresh)   # 成功时它自己会发核对清单
+        self._forget_pending_file(pending.get("message_id", ""))
+        if not ok:
+            self._send(
+                reply(inbound, replies.RESET_REPLACE_KEPT.format(backup=_backup_text(backup)))
+            )
+            return
+        self._wipe_downstream(keep_upload=pending.get("file_name") or "")
+        self._send(reply(inbound, replies.RESET_DONE.format(backup=_backup_text(backup))))
+
+    def _reset_manifest(self) -> list[str]:
+        """现在盘上有什么 —— 一行一项；**只报真有东西的**（空的不占位，清单才读得快）。"""
+        meta = self.store.load_assignment()
+        points = self.store.load_rubric()
+        cards = self.store.load_cards()
+        direction = self.store.load_direction() or {}
+        state = self.store.load_state() or {}
+        preferences = self.store.load_preferences()
+        assignments = self.store.load_assignments()
+        proposals = self.store.load_proposals()
+        uploads = self._uploaded_files()
+
+        lines: list[str] = []
+        if meta is not None:
+            title = meta.title or meta.source_file or "（没读到标题）"
+            lines.append(
+                f"作业书：《{title}》（{len(points)} 条评分点 / {len(cards)} 张任务卡）"
+            )
+        winner = (direction or {}).get("winner") or {}
+        if winner.get("title"):
+            lines.append(f"已定方向：{winner.get('id')}. {winner.get('title')}")
+        votes = ((state.get("vote") or {}).get("votes") or {})
+        if votes:
+            lines.append(f"票数：{len(votes)} 票")
+        if state.get("awaiting"):
+            lines.append(f"还开着的窗口：{state['awaiting']}")
+        if preferences:
+            lines.append(f"志愿：{len(preferences)} 份")
+        if assignments:
+            done = sum(1 for record in assignments if record.completed_at)
+            lines.append(f"分配：{len(assignments)} 条（已完成 {done}）")
+        if proposals:
+            lines.append(f"匿名提议：{len(proposals)} 条")
+        if uploads:
+            lines.append(f"上传的作业书原文：{len(uploads)} 份")
+        return lines
+
+    def _uploaded_files(self) -> list[Path]:
+        root = Path(self.store.uploads)
+        return sorted(p for p in root.glob("*") if p.is_file()) if root.is_dir() else []
+
+    def _backup_session(self) -> Path | None:
+        """把这一场的产物与上传原文整份复制到 ``data/.reset-backup/<时间戳>/``（**只备份、不删**）。"""
+        stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        existing = [name for name in _SESSION_FILES if self.store.path(name).exists()]
+        uploads = self._uploaded_files()
+        if not existing and not uploads:
+            return None
+        backup = Path(self.store.root) / ".reset-backup" / stamp
+        (backup / UPLOADS).mkdir(parents=True, exist_ok=True)
+        for name in existing:
+            shutil.copyfile(self.store.path(name), backup / name)
+        for path in uploads:
+            shutil.copyfile(path, backup / UPLOADS / path.name)
+        return backup
+
+    def _wipe_session_data(self) -> Path | None:
+        """**先备份、再删**「这一场」的产物；返回备份目录（没有可备份的就 ``None``）。
+
+        保留：``members.json``（小组没变，只是换作业书）、``seen.json``（事件去重表 ——
+        清掉会让飞书**补投的旧事件**被当成新指令）、``app.lock``，以及 ``state.json`` 里的
+        ``group_chat_id``（已认下的群）。其余（含状态窗口/票/志愿块）一律清空。
+        """
+        backup = self._backup_session()
+        for name in _SESSION_FILES:
+            self.store.path(name).unlink(missing_ok=True)
+        for path in self._uploaded_files():
+            path.unlink(missing_ok=True)
+        self._reset_state_keep_group()
+        return backup
+
+    def _wipe_downstream(self, *, keep_upload: str = "") -> None:
+        """清掉**上一场的下游**（方向 / 票 / 志愿 / 分配 / 提议 / 催办 / 报告），三份新产物与群保留。
+
+        换作业书成功之后调用：rubric/cards 已经是新的了，但 ``direction``/``state.vote``/
+        ``preferences`` 这些还是上一场的 —— 不清就会"新旧混在一张总表里"。
+        上传目录里**新那份**留着（无评分点模式要按 ``source_file`` 取回正文）。
+        """
+        for name in (DIRECTION, PREFERENCES, ASSIGNMENTS, PROPOSALS, REMINDERS, REPORT, GANTT):
+            self.store.path(name).unlink(missing_ok=True)
+        for path in self._uploaded_files():
+            if keep_upload and path.name == keep_upload:
+                continue
+            path.unlink(missing_ok=True)
+        self._reset_state_keep_group()
+
+    def _reset_state_keep_group(self) -> None:
+        """state.json 只留"已认下的群"，其余（窗口 / 票 / 志愿块）清空。"""
+        state = self.store.load_state() or {}
+        keep_group = state.get("group_chat_id") or ""
+        self.store.save_state({"group_chat_id": keep_group} if keep_group else {})
+
+    def _forget_reset(self) -> None:
+        """清掉待确认的重置窗口（只在"盘上本来就干净、不用重置"时用）。"""
+        state = self.store.load_state() or {}
+        if state.pop("reset", None) is not None:
             self.store.save_state(state)
 
     def _run_decompose(self, inbound: Inbound) -> None:
