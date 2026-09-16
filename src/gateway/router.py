@@ -42,6 +42,9 @@ PROPOSAL_PREFIXES = ("我想提议：", "我想提议:")
 COMPLETE_PATTERN = re.compile(r"^完成\s*[Tt](\d+)\s*$")
 # 无参「完成」= "我该标哪张？"（D-70）：菜单里只放一格，卡片编号由机器人当场列出来。
 COMPLETE_BARE = re.compile(r"^完成\s*$")
+# 「帮助」/「help」/「使用说明」= 要一份用法清单（D-71）。**在任何状态机之前**处理：
+# 看一眼就回答，不改 awaiting、不碰票数/志愿/花名册 —— 纯增量，不影响别的流程。
+HELP_WORDS = ("帮助", "help", "使用说明")
 
 _MENTION_PLACEHOLDER = re.compile(r"@_user_\d+")
 
@@ -61,6 +64,16 @@ def strip_mentions(text: str, mentions: Sequence[Mention] = ()) -> str:
         if mention.key:
             text = text.replace(mention.key, "")
     return _MENTION_PLACEHOLDER.sub("", text or "")
+
+
+def _is_help(text: str) -> bool:
+    """这条消息是不是在要「用法清单」（D-71）。
+
+    ``text`` 必须是**剥掉 @段之后的正文**（调用方已经算好）—— 群里 ``@我 帮助`` 剥完就是「帮助」。
+    用 ``startswith``：说「帮助我一下」「使用说明书」也算想求助。
+    """
+    plain = (text or "").strip().lower()
+    return any(plain.startswith(word) for word in HELP_WORDS)
 
 
 def _is_register_reply(state: dict, text: str) -> bool:
@@ -155,6 +168,12 @@ def route(
 
     if not text:
         return Outcome()                       # 纯 @ 段 / 空文本：静默，不刷屏
+
+    # 1.6 【帮助】在任何状态机**之前**（D-71）：只看一眼就回答用法，
+    #     不读也不写 state、不起 pipeline、不落任何盘 —— 所以"不影响别的进程"。
+    #     位置刻意放在 awaiting 之前：登记确认阶段回「帮助」不该被当成"回复别的就作废"。
+    if _is_help(text):
+        return Outcome(replies=(reply(inbound, replies.HELP_TEXT),))
 
     # 2. 状态优先：裸数字/表单怎么解释，全看 state.json 的 awaiting
     awaiting = (state or {}).get("awaiting")
